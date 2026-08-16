@@ -21,6 +21,15 @@ export interface FormatterApi {
 }
 
 const VIDEO_RENDER_FALLBACK = new Set(['img-tag', 'img-tag-dynamic'])
+// production exempts the whole platform (TikTok/YouTube) for img/img-with-meta,
+// and platform OR type for the img-tag family
+function isVideoArticle(article: any): boolean {
+  return (
+    article.platform === 'tiktok' ||
+    article.platform === 'youtube' ||
+    (Array.isArray(article.media) && article.media.some((m: any) => m?.type === 'video'))
+  )
+}
 
 async function toRenderArticle(article: any, mediaStore: MediaStore | null): Promise<any> {
   const media = Array.isArray(article.media) ? article.media : []
@@ -66,10 +75,7 @@ export function makeFormatterComponent(renderType: string): Component<Record<str
             formatWebsiteCardText,
             extractArticleHeadline,
           } = await import('@kyestu/render')
-          const isVideo =
-            article.platform === 'tiktok' ||
-            article.platform === 'youtube' ||
-            (Array.isArray(article.media) && article.media.some((m: any) => m?.type === 'video'))
+          const isVideo = isVideoArticle(article)
 
           const fullText = () =>
             renderType.startsWith('text-compact') ? compactArticleToText(article) : articleToText(article)
@@ -107,15 +113,19 @@ export function makeFormatterComponent(renderType: string): Component<Record<str
             case 'img-tag':
             case 'img-tag-dynamic':
             case 'img-with-meta': {
-              if (isVideo && VIDEO_RENDER_FALLBACK.has(renderType)) {
+              const videoExempt = isVideo && (VIDEO_RENDER_FALLBACK.has(renderType) || renderType === 'img' || renderType === 'img-with-meta')
+              if (videoExempt) {
                 return { text: fullText(), media: await downloadMedia() }
               }
               const card = await renderCard(article, mediaStore)
-              const tag = `${article.username ?? article.u_id} ${article.created_at ? new Date(article.created_at * 1000).toISOString().slice(0, 16).replace('T', ' ') : ''} ${article.platform}`.trim()
-              const text = renderType === 'img' ? '' : renderType === 'img-with-meta' ? tag : tag
               const media: RenderedMedia[] = []
               if (card) media.push({ path: await persistCard(card), type: 'photo' })
               if (isVideo) media.push(...(await downloadMedia()))
+              // a failed card render must never yield an empty message: keep the
+              // full text as the fallback body (production articleToImgSuccess)
+              if (!card) return { text: fullText(), media }
+              const tag = `${article.username ?? article.u_id} ${article.created_at ? new Date(article.created_at * 1000).toISOString().slice(0, 16).replace('T', ' ') : ''} ${article.platform}`.trim()
+              const text = renderType === 'img' ? '' : tag
               return { text, media }
             }
             case 'tag': {

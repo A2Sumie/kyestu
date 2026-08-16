@@ -183,9 +183,9 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
           const now = Math.floor(Date.now() / 1000)
           if (now < nextAt) return
           nextAt = schedule ? (nextRunAt(schedule, now, entryId) ?? now + DEFAULT_INTERVAL_SECONDS) : now + DEFAULT_INTERVAL_SECONDS
-          void round()
+          round().catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
         }, tickSeconds * 1000)
-        void round()
+        round().catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
         return () => {
           clearInterval(timer)
           void liveRelay?.stopAll()

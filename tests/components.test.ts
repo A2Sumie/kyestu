@@ -7,7 +7,7 @@ import { KyestuDb, dbComponent, defaultMigrationsDir } from '../src/components/d
 import { BrowserSessionPool } from '../src/components/browser-pool'
 import { OneBotClient, OneBotNonRetryableError } from '../src/components/onebot'
 import { OpenAiProcessorClient } from '../src/components/llm-openai'
-import { defineInfra } from '../src/components'
+import { defineInfra, defineAll } from '../src/components'
 
 // ---------- db ----------
 
@@ -282,4 +282,50 @@ test('llm: env: api key resolution', async () => {
   )
   delete process.env.KYESTU_TEST_KEY
   expect(() => new OpenAiProcessorClient({ api_key: 'env:KYESTU_MISSING_KEY' })).toThrow()
+})
+
+// ---------- regression: formatter img family video/fallback semantics ----------
+
+async function renderWith(renderType: string, article: any): Promise<any> {
+  const root = createRoot()
+  const registry = createRegistry()
+  defineAll(registry)
+  const loader = new Loader(root, registry)
+  await loader.load([
+    { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
+    { id: 'media-store', use: 'infra/media-store', with: { cache_root: mkdtempSync(join(tmpdir(), 'kyestu-fmt-')) } },
+    { id: 'fmt', use: `formatter/${renderType}` },
+  ])
+  await root.idle()
+  const api = root.ctx.get<NodeHandle>(nodeKey('fmt'))!.api<{ render: (a: any) => Promise<any> }>()!
+  const out = await api.render(article)
+  await root.dispose()
+  return out
+}
+
+test('formatter: img falls back to full text when card render fails (no empty message)', async () => {
+  // break the render package's font lookup -> renderCard catches and returns null
+  const savedFonts = process.env.FONTS_DIR
+  process.env.FONTS_DIR = '/nonexistent-fonts-dir'
+  try {
+    const out = await renderWith('img', {
+      platform: 'twitter', a_id: '1', u_id: 'u', username: 'u', created_at: 1760000000,
+      content: 'カード失敗時の本文', url: 'https://x/1', type: 'post', ref: null, has_media: false, media: [], extra: null, u_avatar: null,
+    })
+    expect(out.text).toContain('カード失敗時の本文')
+  } finally {
+    if (savedFonts) process.env.FONTS_DIR = savedFonts
+  }
+})
+
+test('formatter: img/img-with-meta exempt video platforms (TikTok) to full text', async () => {
+  const videoArticle = {
+    platform: 'tiktok', a_id: '2', u_id: 'u', username: 'u', created_at: 1760000000,
+    content: '動画です', url: 'https://tt/2', type: 'post', ref: null, has_media: true,
+    media: [{ type: 'video', url: 'https://tt/2.mp4' }], extra: null, u_avatar: null,
+  }
+  const img = await renderWith('img', videoArticle)
+  expect(img.text).toContain('動画です')
+  const meta = await renderWith('img-with-meta', videoArticle)
+  expect(meta.text).toContain('動画です')
 })
