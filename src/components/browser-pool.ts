@@ -83,7 +83,11 @@ export class BrowserSessionPool {
     })
     const defaultBrowserMode: BrowserMode =
       process.env.DISPLAY || process.env.ENABLE_XVFB === '1' ? 'headed-xvfb' : 'headless'
-    const browserMode = request.browser_mode || ((process.env.BROWSER_MODE as BrowserMode | undefined) ?? defaultBrowserMode)
+    let browserMode = request.browser_mode || ((process.env.BROWSER_MODE as BrowserMode | undefined) ?? defaultBrowserMode)
+    // never pop a foreground Chrome on a macOS dev host: headed modes require Xvfb
+    if (process.platform === 'darwin' && process.env.ENABLE_XVFB !== '1' && browserMode !== 'headless') {
+      browserMode = 'headless'
+    }
     const sessionId = sanitizeSessionId(request.session_profile || request.device_profile || 'default')
     const sessionKey = `${sessionId}:${browserMode}`
 

@@ -100,13 +100,9 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   for (const forwarder of old.forwarders ?? []) {
     const id = forwarder.name
     if (!id) throw new Error('forwarder without a name')
-    const { cfg_forwarder, ...rest } = forwarder
-    components.push({
-      id,
-      use: `forwarder/${crawlerKind(forwarder)}`,
-      with: { ...rest, ...(cfg_forwarder ?? {}) },
-    })
-    warnings.push(`forwarder '${id}': legacy origin auto-bind is not imported; add explicit routes if needed`)
+    warnings.push(
+      `forwarder '${id}': legacy origin auto-bind templates are not imported (media tool config moves into the crawler's own media section)`,
+    )
   }
 
   if (old.api) components.push({ id: 'api', use: 'app/api', with: old.api })

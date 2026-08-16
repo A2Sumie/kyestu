@@ -89,6 +89,23 @@ test('browser pool: same profile reuses one launch; concurrent createPage dedups
   await pool.closeAll()
 })
 
+test('browser pool: on macOS without Xvfb, headed modes are downgraded to headless', async () => {
+  if (process.platform !== 'darwin') return
+  const modes: string[] = []
+  const pool = new BrowserSessionPool({
+    cacheRoot: mkdtempSync(join(tmpdir(), 'kyestu-browser-')),
+    skipBackoff: true,
+    launcher: async (mode) => {
+      modes.push(mode)
+      return fakeBrowser([]) as any
+    },
+  })
+  delete process.env.ENABLE_XVFB
+  await pool.createPage({ session_profile: 'guard', browser_mode: 'headed-xvfb' as any })
+  expect(modes).toEqual(['headless'])
+  await pool.closeAll()
+})
+
 test('browser pool: disconnect evicts; next createPage relaunches', async () => {
   const launches: string[] = []
   let browser = fakeBrowser(launches)
