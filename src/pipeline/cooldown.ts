@@ -45,6 +45,22 @@ export function classifyCrawlError(error: unknown): CrawlErrorClass {
   return 'unknown'
 }
 
+/** extract a Retry-After hint the spider embedded in an error message (X 429s) */
+export function retryAfterMillisFromMessage(message: string): number | null {
+  const match = message.match(/\bretry_after=([^\s]+)/)
+  if (!match) return null
+  const value = match[1]
+  if (!value || value === 'none') return null
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value)
+    if (Number.isFinite(seconds) && seconds > 0 && seconds <= 24 * 60 * 60) return seconds * 1000
+    return null
+  }
+  const timestamp = Date.parse(value.replace(/_/g, ' '))
+  if (!Number.isFinite(timestamp)) return null
+  return Math.max(0, timestamp - Date.now())
+}
+
 export function shouldRetry(klass: CrawlErrorClass, platform?: string): boolean {
   if (platform === 'instagram' && klass === 'timeout') return false
   return !NO_RETRY.has(klass)
@@ -53,6 +69,7 @@ export function shouldRetry(klass: CrawlErrorClass, platform?: string): boolean 
 export class CooldownMap {
   private entries = new Map<string, { expiresAt: number; classification: CrawlErrorClass }>()
   private escalations = new Map<string, number>()
+  private lastMessage = new Map<string, string>()
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -67,15 +84,27 @@ export class CooldownMap {
   }
 
   hit(key: string, classification: CrawlErrorClass, platform?: string, retryAfterMs?: number): number {
-    const base =
+    let duration =
       retryAfterMs ??
       (platform === 'instagram' ? (IG_OVERRIDES[classification] ?? RISK_COOLDOWN_MS[classification]) : RISK_COOLDOWN_MS[classification])
-    if (base <= 0) return 0
+    // rate-limit cooldowns apply even when the class has no base duration; a
+    // Retry-After hint can only lengthen, never shorten, capped at 6h
+    if (duration <= 0 && classification !== 'rate_limit') return 0
+    if (classification === 'rate_limit' && retryAfterMs === undefined) {
+      const hint = retryAfterMillisFromMessage(this.lastMessage.get(key) ?? '')
+      if (hint !== null && hint > duration) duration = Math.min(hint, 6 * 60 * 60 * 1000)
+    }
+    if (duration <= 0) return 0
     const escalation = Math.min(this.escalations.get(key) ?? 0, 3)
-    const duration = Math.min(base * 2 ** escalation, 6 * 60 * 60 * 1000)
+    const total = Math.min(duration * 2 ** escalation, 6 * 60 * 60 * 1000)
     this.escalations.set(key, escalation + 1)
-    this.entries.set(key, { expiresAt: this.now() + duration, classification })
-    return duration
+    this.entries.set(key, { expiresAt: this.now() + total, classification })
+    return total
+  }
+
+  /** stash the last error message for this key so hit() can read Retry-After */
+  recordMessage(key: string, message: string): void {
+    this.lastMessage.set(key, message)
   }
 
   succeed(key: string): void {

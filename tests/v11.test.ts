@@ -393,3 +393,21 @@ test('outbound: crashed sending claim is reclaimed after the stale window; cappe
   expect(retried.duplicate).toBeNull()
   db.close()
 })
+
+// ---------- regression: retry-after honored on rate-limit cooldowns ----------
+
+test('cooldown: rate_limit honors embedded retry_after; other classes keep base table', async () => {
+  const { CooldownMap, retryAfterMillisFromMessage } = await import('../src/pipeline/cooldown')
+  const map = new CooldownMap()
+  map.recordMessage('u', 'Failed to fetch x: 429 retry_after=600')
+  const ms = map.hit('u', 'rate_limit', 'twitter')
+  expect(ms).toBeGreaterThanOrEqual(600_000)
+  // http-date form with underscores
+  expect(retryAfterMillisFromMessage('429 retry_after=Fri,_16_Aug_2026_23:00:00_GMT')).not.toBeNull()
+  // rate_limit still cools when there is no hint (base 20min)
+  const map2 = new CooldownMap()
+  expect(map2.hit('u2', 'rate_limit')).toBe(20 * 60 * 1000)
+  // unknown/timeout classes with zero base still skip
+  const map3 = new CooldownMap()
+  expect(map3.hit('u3', 'parser')).toBe(0)
+})

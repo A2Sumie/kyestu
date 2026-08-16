@@ -171,7 +171,10 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
               }
             }
             if (succeeded) cooldowns.succeed(url)
-            else cooldowns.hit(url, classifyCrawlError(lastError), platform)
+            else {
+              cooldowns.recordMessage(url, lastError instanceof Error ? lastError.message : String(lastError))
+              cooldowns.hit(url, classifyCrawlError(lastError), platform)
+            }
           }
         } finally {
           running = false
