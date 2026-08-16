@@ -1,5 +1,7 @@
 import { spawn } from 'child_process'
 import { chmodSync, copyFileSync, existsSync, renameSync, rmSync, statSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
 import type { Component } from '../core/types'
 import { BrowserSessionPool, type BrowserPageRequest } from './browser-pool'
 
@@ -20,6 +22,8 @@ export interface YtdlpKeepaliveJob {
   interval_seconds?: number
   ytdlp_path?: string
   extra_args?: string[]
+  /** crawler names that consume this jar (informational, set by the importer) */
+  sources?: string[]
 }
 
 export interface BrowserKeepaliveJob {
@@ -48,7 +52,23 @@ export interface KeepaliveJobState {
   lastError: string | null
 }
 
+export interface CookieJarStatus {
+  path: string
+  exists: boolean
+  size: number | null
+  age_seconds: number | null
+  sources: string[]
+  keepalive: KeepaliveJobState | null
+}
+
 const DEFAULT_INTERVAL_SECONDS = 6 * 3600
+
+/** expand $VAR/${VAR} and leading ~ in configured paths */
+export function expandPath(p: string, env: Record<string, string | undefined> = process.env): string {
+  const expanded = p.replace(/\$(\w+)|\$\{(\w+)\}/g, (_, a, b) => env[a ?? b] ?? '')
+  if (expanded === '~' || expanded.startsWith('~/')) return join(homedir(), expanded.slice(2))
+  return expanded
+}
 
 function jobName(job: KeepaliveJob, index: number): string {
   return job.name ?? `${job.kind}:${'cookie_file' in job ? job.cookie_file : job.session_profile}#${index}`
@@ -87,6 +107,35 @@ export class CookieKeepaliveService {
     return [...this.states.values()]
   }
 
+  /** jar-level management view: freshness + consuming crawlers + keepalive state */
+  jarStatus(): CookieJarStatus[] {
+    const out: CookieJarStatus[] = []
+    for (const [index, job] of this.jobs.entries()) {
+      if (job.kind !== 'ytdlp') continue
+      const path = expandPath(job.cookie_file)
+      let exists = false
+      let size: number | null = null
+      let ageSeconds: number | null = null
+      try {
+        const stat = statSync(path)
+        exists = true
+        size = stat.size
+        ageSeconds = Math.max(0, Math.floor((Date.now() - stat.mtimeMs) / 1000))
+      } catch {
+        // missing jar surfaces as exists: false
+      }
+      out.push({
+        path,
+        exists,
+        size,
+        age_seconds: ageSeconds,
+        sources: job.sources ?? [],
+        keepalive: this.states.get(jobName(job, index)) ?? null,
+      })
+    }
+    return out
+  }
+
   async runNow(name?: string): Promise<KeepaliveJobState[]> {
     for (const [index, job] of this.jobs.entries()) {
       const n = jobName(job, index)
@@ -116,11 +165,12 @@ export class CookieKeepaliveService {
   }
 
   private async runYtdlp(job: YtdlpKeepaliveJob): Promise<void> {
-    if (!existsSync(job.cookie_file) || statSync(job.cookie_file).size === 0) {
-      throw new Error(`cookie jar missing or empty: ${job.cookie_file}`)
+    const cookieFile = expandPath(job.cookie_file)
+    if (!existsSync(cookieFile) || statSync(cookieFile).size === 0) {
+      throw new Error(`cookie jar missing or empty: ${cookieFile}`)
     }
-    const tmp = `${job.cookie_file}.tmp-keepalive-${process.pid}`
-    copyFileSync(job.cookie_file, tmp)
+    const tmp = `${cookieFile}.tmp-keepalive-${process.pid}`
+    copyFileSync(cookieFile, tmp)
     chmodSync(tmp, 0o600)
     try {
       await exec(job.ytdlp_path ?? 'yt-dlp', [
@@ -134,9 +184,9 @@ export class CookieKeepaliveService {
         ...(job.extra_args ?? []),
         job.url,
       ])
-      copyFileSync(job.cookie_file, `${job.cookie_file}.bak-keepalive`)
-      renameSync(tmp, job.cookie_file)
-      chmodSync(job.cookie_file, 0o600)
+      copyFileSync(cookieFile, `${cookieFile}.bak-keepalive`)
+      renameSync(tmp, cookieFile)
+      chmodSync(cookieFile, 0o600)
     } finally {
       rmSync(tmp, { force: true })
     }

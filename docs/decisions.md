@@ -61,3 +61,11 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 ## D10：cookie 保活为运行时插件 app/cookie-keepalive（2026-08-16）
 
 外部运维 cron（tools/youtube-cookie-keepalive.sh）收进架构，作为独立组件 `app/cookie-keepalive`（`src/components/cookie-keepalive.ts`）。两种 job：`ytdlp`（临时副本跑 yt-dlp --simulate，成功后原子轮换 jar 并留 .bak-keepalive，语义与生产脚本一致，失败绝不动旧 jar）和 `browser`（用 browser-pool 保温持久化 session，X/IG/TikTok 通用，降低风控触发）。组件暴露 CookieKeepaliveService（runNow/status），按 job 独立 setInterval（默认 6h），单 job 失败互不影响。导入器自动为带 cookie_file 的 YouTube 爬虫生成 ytdlp job（每个 distinct jar 一条，间隔 6h，与生产 cron 一致）；browser job 走手动配置。
+
+## D11：parity 差异处置（2026-08-16）
+
+详见 docs/parity-gap.md。要点：Mechanical 改名 processor/rules 保留；showroom 抽取的 schedule-webhook 回写确认在用（必做）；cookie-file-path/cookie-policy 不移植，功能并入 cookie-keepalive 升级为 cookie 管理；hy3 熔断+模型能力探测打包进 processor 层；redaction 不做（公共内容无敏），改为 DB 迁移/zstd 压缩工具；x-link-ingest 做但不接发送链路；codex 抛弃，留单次运行 harness 低优先级 todo；crawler-health-audit 暂缓。
+
+## D12：processor/rules + cookie 管理 + LLM 提供商管理（2026-08-16）
+
+parity-gap 1/3/4 落地。Mechanical 改名 `processor/rules`（`pipeline/digest-rules.ts` 纯逻辑 + 组件同名 process 接缝），导入器从 drop 改映射。cookie-keepalive 升级 cookie 管理：expandPath（env/~）、jarStatus()（jar 存在/大小/年龄/sources/保活状态），导入器汇总共享 jar 的来源爬虫。LLM 提供商管理并入 processor/openai：熔断（circuit 配置，4xx 不计数，open 直走 fallback）+ unfreeze + probe 探活 + status；hy3-circuit-breaker 与 model-capability 不单设服务。

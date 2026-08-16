@@ -84,3 +84,33 @@ test('browser keepalive without a pool reports unavailable instead of throwing',
   expect(states[0]!.lastOk).toBe(false)
   expect(states[0]!.lastError).toContain('browser pool unavailable')
 })
+
+test('expandPath expands env vars and ~', () => {
+  const { expandPath } = require('../src/components/cookie-keepalive')
+  expect(expandPath('$KA_DIR/cookies.txt', { KA_DIR: '/data' })).toBe('/data/cookies.txt')
+  expect(expandPath('${KA_DIR}/c.txt', { KA_DIR: '/d' })).toBe('/d/c.txt')
+  expect(expandPath('~/c.txt')).toContain('/c.txt')
+  expect(expandPath('/abs/path.txt')).toBe('/abs/path.txt')
+})
+
+test('jarStatus reports freshness, sources, and keepalive state; missing jar surfaces exists:false', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-jar-'))
+  const jar = join(dir, 'cookies.txt')
+  writeFileSync(jar, 'jar-content\n')
+  const helper = fakeYtdlp(dir, 0)
+  const service = new CookieKeepaliveService(
+    [
+      { kind: 'ytdlp', cookie_file: jar, url: 'https://www.youtube.com/@x', ytdlp_path: helper, sources: ['YouTube抓取'] },
+      { kind: 'ytdlp', cookie_file: join(dir, 'gone.txt'), url: 'https://www.youtube.com/@y' },
+    ],
+    null,
+  )
+  await service.runNow()
+  const jars = service.jarStatus()
+  expect(jars.length).toBe(2)
+  expect(jars[0]).toMatchObject({ path: jar, exists: true, size: 12, sources: ['YouTube抓取'] })
+  expect(jars[0]!.age_seconds).toBeGreaterThanOrEqual(0)
+  expect(jars[0]!.keepalive?.lastOk).toBe(true)
+  expect(jars[1]!.exists).toBe(false)
+  expect(jars[1]!.keepalive?.lastError).toContain('missing or empty')
+})

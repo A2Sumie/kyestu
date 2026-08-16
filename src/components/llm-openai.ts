@@ -13,6 +13,11 @@ export interface PromptAsset {
   max_chars?: number
 }
 
+export interface CircuitConfig {
+  failure_threshold?: number
+  cooldown_seconds?: number
+}
+
 export interface OpenAiProcessorConfig {
   api_key?: string
   base_url?: string
@@ -28,12 +33,14 @@ export interface OpenAiProcessorConfig {
   extended_payload?: Record<string, unknown>
   reasoning_effort?: string
   request_timeout_ms?: number
+  circuit?: CircuitConfig
   fallback?: {
     api_key?: string
     base_url?: string
     model_id?: string
     wire_api?: 'responses' | 'chat_completions'
     extended_payload?: Record<string, unknown>
+    circuit?: CircuitConfig
   }
 }
 
@@ -44,6 +51,17 @@ export class LlmHttpError extends Error {
   ) {
     super(message)
   }
+}
+
+/** provider circuit is open; skip attempts until cooldown elapses (idol-bbq hy3-circuit-breaker, generalized) */
+export class CircuitOpenError extends Error {}
+
+export interface ProviderStatus {
+  state: 'closed' | 'open'
+  consecutive_failures: number
+  open_until: number | null
+  last_error: string | null
+  last_probe: { ok: boolean; latency_ms: number; error: string | null; at: number } | null
 }
 
 export interface ProcessorApi {
@@ -72,6 +90,10 @@ export class OpenAiProcessorClient implements ProcessorApi {
   private readonly apiKey: string
   private readonly fallbackClient: OpenAiProcessorClient | null = null
   private promptCache: string | null = null
+  private consecutiveFailures = 0
+  private circuitOpenUntil = 0
+  private lastError: string | null = null
+  private lastProbe: ProviderStatus['last_probe'] = null
 
   constructor(config: OpenAiProcessorConfig) {
     this.config = config
@@ -87,6 +109,54 @@ export class OpenAiProcessorClient implements ProcessorApi {
     }
   }
 
+  status(): ProviderStatus {
+    const open = Date.now() < this.circuitOpenUntil
+    return {
+      state: open ? 'open' : 'closed',
+      consecutive_failures: this.consecutiveFailures,
+      open_until: open ? this.circuitOpenUntil : null,
+      last_error: this.lastError,
+      last_probe: this.lastProbe,
+    }
+  }
+
+  unfreeze(): void {
+    this.consecutiveFailures = 0
+    this.circuitOpenUntil = 0
+    this.lastError = null
+  }
+
+  /** reachability/auth probe: tiny request, bypasses the circuit */
+  async probe(): Promise<NonNullable<ProviderStatus['last_probe']>> {
+    const started = Date.now()
+    try {
+      const isResponses = this.config.wire_api === 'responses'
+      const body: Record<string, unknown> = isResponses
+        ? { model: this.config.model_id || 'openai', input: [{ role: 'user', content: 'ping' }], max_output_tokens: 16 }
+        : {
+            model: this.config.model_id || 'openai',
+            messages: [{ role: 'user', content: 'ping' }],
+            max_tokens: 1,
+          }
+      const res = await fetch(this.config.base_url || 'https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.config.request_timeout_ms ?? 30_000),
+      })
+      if (!res.ok) throw new LlmHttpError(res.status, `probe failed: HTTP ${res.status}`)
+      this.lastProbe = { ok: true, latency_ms: Date.now() - started, error: null, at: started }
+    } catch (error) {
+      this.lastProbe = {
+        ok: false,
+        latency_ms: Date.now() - started,
+        error: error instanceof Error ? error.message : String(error),
+        at: started,
+      }
+    }
+    return this.lastProbe
+  }
+
   async process(text: string): Promise<string> {
     try {
       return await this.processWithRetry(text)
@@ -97,17 +167,37 @@ export class OpenAiProcessorClient implements ProcessorApi {
   }
 
   private async processWithRetry(text: string, retries = 2): Promise<string> {
+    if (Date.now() < this.circuitOpenUntil) {
+      throw new CircuitOpenError(
+        `provider circuit open until ${new Date(this.circuitOpenUntil).toISOString()}: ${this.lastError ?? 'repeated failures'}`,
+      )
+    }
     let lastError: unknown
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
-        return await this.processOnce(text)
+        const result = await this.processOnce(text)
+        this.consecutiveFailures = 0
+        this.lastError = null
+        return result
       } catch (error) {
         lastError = error
         // 4xx is a caller/auth problem; retrying the identical payload is noise
+        // and it must not trip the circuit (the provider itself is healthy)
         if (error instanceof LlmHttpError && error.status >= 400 && error.status < 500) throw error
       }
     }
+    this.recordFailure(lastError)
     throw lastError
+  }
+
+  private recordFailure(error: unknown): void {
+    this.consecutiveFailures += 1
+    this.lastError = error instanceof Error ? error.message : String(error)
+    const threshold = this.config.circuit?.failure_threshold ?? 3
+    if (this.consecutiveFailures >= threshold) {
+      const cooldownMs = (this.config.circuit?.cooldown_seconds ?? 300) * 1000
+      this.circuitOpenUntil = Date.now() + cooldownMs
+    }
   }
 
   private async processOnce(text: string): Promise<string> {

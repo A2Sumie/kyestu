@@ -150,6 +150,20 @@ test('youtube crawlers with cookie_file generate an in-runtime cookie-keepalive 
       cookie_file: '/app/assets/cookies/ycookies.txt',
       url: 'https://www.youtube.com/@sallyamakiofficial',
       interval_seconds: 21600,
+      sources: ['YouTube抓取', 'YouTube抓取 - 20:05'],
     },
   ])
+})
+
+test('Mechanical processors map to processor/rules instead of being dropped', () => {
+  const config = convertIdolBbqConfig({
+    processors: [
+      { id: 'digest-merge', provider: 'Mechanical', cfg_processor: { action: 'merge', extended_payload: { merge_window_minutes: 30, min_group_size: 2 } } },
+    ],
+  })
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+  const rules = byId.get('digest-merge')!
+  expect(rules.use).toBe('processor/rules')
+  expect(rules.with).toMatchObject({ action: 'merge', extended_payload: { merge_window_minutes: 30 } })
+  expect((config as any).warnings ?? []).toEqual([])
 })

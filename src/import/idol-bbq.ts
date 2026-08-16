@@ -18,7 +18,7 @@ const PROVIDER_PROTOCOL: Record<string, string> = {
   OpenaiLike: 'openai',
 }
 
-const DROPPED_PROVIDERS = new Set(['Google', 'Deepseek', 'Mechanical'])
+const DROPPED_PROVIDERS = new Set(['Google', 'Deepseek'])
 
 function inferWireApi(cfgProcessor: any): string {
   if (cfgProcessor?.wire_api) return cfgProcessor.wire_api
@@ -94,22 +94,30 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   }
 
   // in-runtime cookie keepalive replaces the external ops cron
-  // (tools/youtube-cookie-keepalive.sh): one ytdlp job per distinct jar
+  // (tools/youtube-cookie-keepalive.sh): one ytdlp job per distinct jar,
+  // sources = crawlers that consume the jar (cookie management view)
   const keepaliveJobs: any[] = []
-  const keepaliveSeen = new Set<string>()
+  const keepaliveByJar = new Map<string, { job: any; sources: string[] }>()
   for (const crawler of old.crawlers ?? []) {
     if (crawlerKind(crawler) !== 'youtube') continue
     const cookieFile: string | undefined = crawler.cfg_crawler?.cookie_file ?? crawler.cookie_file
-    if (!cookieFile || keepaliveSeen.has(cookieFile)) continue
-    keepaliveSeen.add(cookieFile)
+    if (!cookieFile) continue
+    const existing = keepaliveByJar.get(cookieFile)
+    if (existing) {
+      if (crawler.name) existing.sources.push(crawler.name)
+      continue
+    }
     const firstPath = Array.isArray(crawler.paths) && crawler.paths.length > 0 ? `/${String(crawler.paths[0]).replace(/^\/+/, '')}` : ''
-    keepaliveJobs.push({
-      name: `yt-${keepaliveJobs.length + 1}`,
+    const job = {
+      name: `yt-${keepaliveByJar.size + 1}`,
       kind: 'ytdlp',
       cookie_file: cookieFile,
       url: `${String(crawler.origin ?? 'https://www.youtube.com').replace(/\/+$/, '')}${firstPath}`,
       interval_seconds: 6 * 3600,
-    })
+      sources: crawler.name ? [crawler.name] : [],
+    }
+    keepaliveByJar.set(cookieFile, { job, sources: job.sources })
+    keepaliveJobs.push(job)
   }
   if (keepaliveJobs.length > 0) {
     components.push({ id: 'cookie-keepalive', use: 'app/cookie-keepalive', with: { jobs: keepaliveJobs } })
@@ -121,6 +129,10 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     if (DROPPED_PROVIDERS.has(provider)) {
       warnings.push(`processor '${id}': provider '${provider}' is dropped in kyestu (unused legacy); entry skipped`)
       skippedProcessors.add(id)
+      continue
+    }
+    if (provider === 'Mechanical') {
+      components.push({ id, use: 'processor/rules', with: { ...rest, ...(cfg_processor ?? {}) } })
       continue
     }
     const protocol = PROVIDER_PROTOCOL[provider]

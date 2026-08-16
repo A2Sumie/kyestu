@@ -392,3 +392,87 @@ test('live-player: relays bus live events to the player sync endpoint only', asy
     server.stop(true)
   }
 })
+
+// ---------- llm provider management: circuit breaker + probe ----------
+
+test('llm circuit: repeated 5xx opens the circuit, open state skips attempts, unfreeze resets', async () => {
+  let calls = 0
+  await withMockLlm(
+    {
+      '/down': () => {
+        calls++
+        return new Response('err', { status: 500 })
+      },
+    },
+    async (base) => {
+      const client = new OpenAiProcessorClient({
+        api_key: 'k',
+        base_url: `${base}/down`,
+        wire_api: 'chat_completions',
+        circuit: { failure_threshold: 2, cooldown_seconds: 600 },
+      })
+      await expect(client.process('x')).rejects.toThrow('500') // 3 attempts = 1 failure
+      expect(client.status().state).toBe('closed')
+      await expect(client.process('x')).rejects.toThrow('500') // second failure -> open
+      expect(client.status().state).toBe('open')
+      expect(client.status().consecutive_failures).toBe(2)
+      const before = calls
+      await expect(client.process('x')).rejects.toThrow('circuit open')
+      expect(calls).toBe(before) // no attempts while open
+      client.unfreeze()
+      expect(client.status().state).toBe('closed')
+      expect(client.status().consecutive_failures).toBe(0)
+    },
+  )
+})
+
+test('llm circuit: 4xx never trips the circuit; open primary delegates to fallback', async () => {
+  await withMockLlm(
+    {
+      '/auth': () => new Response('no', { status: 401 }),
+      '/down': () => new Response('err', { status: 500 }),
+      '/backup': chatOk('fallback-ok'),
+    },
+    async (base) => {
+      const auth = new OpenAiProcessorClient({
+        api_key: 'k',
+        base_url: `${base}/auth`,
+        circuit: { failure_threshold: 1 },
+      })
+      await expect(auth.process('x')).rejects.toThrow('401')
+      await expect(auth.process('x')).rejects.toThrow('401')
+      expect(auth.status().state).toBe('closed') // 4xx does not count
+
+      const withFallback = new OpenAiProcessorClient({
+        api_key: 'k',
+        base_url: `${base}/down`,
+        circuit: { failure_threshold: 1 },
+        fallback: { base_url: `${base}/backup` },
+      })
+      expect(await withFallback.process('x')).toBe('fallback-ok') // primary fails -> fallback
+      expect(withFallback.status().state).toBe('open')
+      expect(await withFallback.process('x')).toBe('fallback-ok') // open -> straight to fallback
+    },
+  )
+})
+
+test('llm probe: records reachability result without touching the circuit', async () => {
+  await withMockLlm(
+    {
+      '/up': chatOk('pong'),
+      '/down': () => new Response('err', { status: 500 }),
+    },
+    async (base) => {
+      const up = new OpenAiProcessorClient({ api_key: 'k', base_url: `${base}/up` })
+      const probe = await up.probe()
+      expect(probe.ok).toBe(true)
+      expect(up.status().last_probe?.ok).toBe(true)
+
+      const down = new OpenAiProcessorClient({ api_key: 'k', base_url: `${base}/down`, circuit: { failure_threshold: 1 } })
+      const badProbe = await down.probe()
+      expect(badProbe.ok).toBe(false)
+      expect(badProbe.error).toContain('500')
+      expect(down.status().state).toBe('closed') // probe bypasses/does not feed the circuit
+    },
+  )
+})

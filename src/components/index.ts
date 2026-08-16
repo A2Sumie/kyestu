@@ -3,6 +3,7 @@ import { dbComponent } from './db'
 import { browserPoolComponent } from './browser-pool'
 import { onebotComponent } from './onebot'
 import { openAiProcessorComponent } from './llm-openai'
+import { rulesProcessorComponent } from './processor-rules'
 import { busComponent } from './bus'
 import { mediaStoreComponent } from './media-store'
 import { makeCrawlerComponent } from './crawler'
@@ -22,6 +23,7 @@ export function defineInfra(registry: Registry): Registry {
     .define('infra/bus', busComponent)
     .define('infra/media-store', mediaStoreComponent)
     .define('processor/openai', openAiProcessorComponent)
+    .define('processor/rules', rulesProcessorComponent)
 }
 
 const CRAWLER_KINDS = ['x', 'x-list', 'instagram', 'tiktok', 'youtube', 'website-227', 'website', 'leap', 'messageboard']
