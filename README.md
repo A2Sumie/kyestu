@@ -2,6 +2,8 @@
 
 > **⚠️ WIP**：本项目仍处于工作进展中。配置格式、CLI 参数与运行时行为可能随提交发生变化，请以最新 `main` 分支为准；接入前建议固定到具体 commit。
 
+A Cordis-inspired SNS and content transfer utility.
+
 SNS 聚合转发系统：定时抓取 **X / Instagram / TikTok / YouTube / 官网**，经翻译、去重、渲染后转发到 **QQ 群 / B 站动态与视频投稿**。
 
 底座是一个自研的时空可组合 runtime（可回滚 effect + 反应式 coeffect + fiber 生命周期，源自 Cordis 论文范式）：配置即组件清单 + 路由清单，改配置即热 reconcile，依赖按图自动排序激活/停用，失败自动部分恢复。
