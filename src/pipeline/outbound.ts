@@ -60,12 +60,20 @@ export class OutboundStore {
     payload: unknown,
     meta: { route_key?: string; target_id?: string; task_kind?: string; article_key?: string } = {},
   ): { id: number; duplicate: 'sent' | 'in_progress' | null } {
-    const existing = this.store.db.query('SELECT id, status FROM outbound_messages WHERE idempotency_key = ?').get(key) as
-      | { id: number; status: string }
+    const existing = this.store.db.query('SELECT id, status, updated_at FROM outbound_messages WHERE idempotency_key = ?').get(key) as
+      | { id: number; status: string; updated_at: number }
       | null
     if (existing) {
       if (existing.status === 'sent') return { id: existing.id, duplicate: 'sent' }
-      if (['sending', 'queued'].includes(existing.status)) return { id: existing.id, duplicate: 'in_progress' }
+      // a claim that crashed mid-send must not suppress the content forever:
+      // reclaim after a stale window (production: 30min reclaim, 5 attempts cap)
+      const staleMs = 30 * 60 * 1000
+      const attemptRow = this.store.db.query('SELECT attempt_count FROM outbound_messages WHERE id = ?').get(existing.id) as
+        | { attempt_count: number }
+        | null
+      const stale = Date.now() - existing.updated_at > staleMs
+      const exhausted = Number(attemptRow?.attempt_count ?? 0) >= 5
+      if (!stale || exhausted) return { id: existing.id, duplicate: 'in_progress' }
       this.store.db
         .query(`UPDATE outbound_messages SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ? WHERE id = ?`)
         .run(Date.now(), existing.id)

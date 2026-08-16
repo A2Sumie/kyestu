@@ -365,3 +365,31 @@ test('main env resolution: unset env: refs drop the key instead of keeping a lit
   expect(resolveEnvStrings('env:KYESTU_TEST_SET')).toBe('v1')
   delete process.env.KYESTU_TEST_SET
 })
+
+// ---------- regression: stale outbound claims are reclaimed, exhausted ones are not ----------
+
+test('outbound: crashed sending claim is reclaimed after the stale window; capped at 5 attempts', async () => {
+  const { OutboundStore } = await import('../src/pipeline/outbound')
+  const db = memDb()
+  const outbound = new OutboundStore(db)
+  const key = 'c|f|t|twitter:1'
+  const first = outbound.claim(key, { text: 'a' })
+  // simulate crash: leave status 'sending', backdate updated_at beyond the stale window
+  db.db.query('UPDATE outbound_messages SET updated_at = ? WHERE id = ?').run(Date.now() - 31 * 60 * 1000, first.id)
+  const reclaimed = outbound.claim(key, { text: 'a' })
+  expect(reclaimed.duplicate).toBeNull()
+  expect(reclaimed.id).toBe(first.id)
+  // fresh 'sending' claim is still duplicate-in-progress
+  const inProgress = outbound.claim(key, { text: 'a' })
+  expect(inProgress.duplicate).toBe('in_progress')
+  // attempt exhaustion: 5 total attempts -> permanent in_progress
+  db.db.query('UPDATE outbound_messages SET attempt_count = 5, updated_at = ? WHERE id = ?').run(Date.now() - 31 * 60 * 1000, first.id)
+  const exhausted = outbound.claim(key, { text: 'a' })
+  expect(exhausted.duplicate).toBe('in_progress')
+  // failed rows are retried regardless of age until cap
+  outbound.mark(first.id, 'failed', 'err')
+  db.db.query('UPDATE outbound_messages SET attempt_count = 3, updated_at = ? WHERE id = ?').run(Date.now() - 31 * 60 * 1000, first.id)
+  const retried = outbound.claim(key, { text: 'a' })
+  expect(retried.duplicate).toBeNull()
+  db.close()
+})
