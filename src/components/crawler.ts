@@ -147,11 +147,21 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
         if (id !== null) bus.emit({ platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
       })
 
+      // production spider-manager waits a random interval_time between target
+      // URLs inside one round (risk-control pacing); keep the same math
+      const waitTimeMs = (() => {
+        const interval = (config as any).interval_time as { min?: number; max?: number } | undefined
+        const min = Math.max(0, Number(interval?.min) || 0)
+        const max = Math.max(min, Number(interval?.max) || min)
+        return max === min ? min : Math.floor(Math.random() * (max - min + 1)) + min
+      })()
+
       const round = async (): Promise<void> => {
         if (running) return
         running = true
         try {
-          for (const url of urls) {
+          for (const [index, url] of urls.entries()) {
+            if (index > 0 && waitTimeMs > 0) await fiber.wrap(() => Bun.sleep(waitTimeMs))()
             const cooled = cooldowns.check(url)
             if (cooled.cooled) continue
             let lastError: unknown

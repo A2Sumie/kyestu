@@ -103,3 +103,33 @@ test('e2e: duplicate article is sent once (forward_by dedup)', async () => {
     llm.stop(true)
   }
 })
+
+// ---------- regression: interval_time pacing waits between target URLs ----------
+
+test('e2e: interval_time waits between target urls in one round', async () => {
+  const times: number[] = []
+  setCrawlDriverForTest(async () => {
+    times.push(Date.now())
+    return []
+  })
+  try {
+    const root = createRoot()
+    const loader = new Loader(root, defineAll(createRegistry()))
+    await loader.load([
+      { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
+      { id: 'bus', use: 'infra/bus' },
+      {
+        id: 'multi',
+        use: 'crawler/website',
+        with: { origin: 'https://example.com', paths: ['a', 'b', 'c'], interval_time: { min: 80, max: 80 } },
+      },
+    ])
+    await root.idle()
+    await Bun.sleep(400)
+    expect(times.length).toBe(3)
+    expect(times[2]! - times[0]!).toBeGreaterThanOrEqual(150) // two >=80ms gaps
+    await root.dispose()
+  } finally {
+    setCrawlDriverForTest(null)
+  }
+}, 10_000)
