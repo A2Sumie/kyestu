@@ -86,3 +86,38 @@ test('forward targets without ids derive from config content, not its length', (
   expect((config as any).warnings.some((w: string) => w.includes('duplicate forward_target id'))).toBe(true)
   expect((config as any).warnings.some((w: string) => w.includes('without id'))).toBe(true)
 })
+
+test('live_relay targets split into a standalone app/live-player plugin', () => {
+  const config = convertIdolBbqConfig({
+    crawlers: [
+      {
+        name: 'IG高频',
+        origin: 'https://www.instagram.com',
+        paths: ['shiina_satsuki227'],
+        cfg_crawler: {
+          live_relay: {
+            enabled: true,
+            archive_root: '/data/live',
+            targets: {
+              shiina_satsuki227: { player_id: 'relay', player_name: '【IG Live】椎名桜月', live_player_url: 'https://tv.n2nj.moe' },
+            },
+          },
+        },
+      },
+      {
+        name: 'IG重复',
+        origin: 'https://www.instagram.com',
+        paths: ['shiina_satsuki227'],
+        cfg_crawler: { live_relay: { enabled: true, targets: { shiina_satsuki227: { live_player_url: 'https://other' } } } },
+      },
+    ],
+  })
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+  const crawler = byId.get('IG高频')!
+  expect(crawler.with!.live_relay).toEqual({ enabled: true, archive_root: '/data/live' })
+  const player = byId.get('live-player')!
+  expect(player.use).toBe('app/live-player')
+  expect(Object.keys(player.with!.targets!)).toEqual(['shiina_satsuki227'])
+  expect(player.with!.targets!.shiina_satsuki227.live_player_url).toBe('https://tv.n2nj.moe') // first claim wins
+  expect((config as any).warnings!.some((w: string) => w.includes("live_relay target 'shiina_satsuki227'"))).toBe(true)
+})

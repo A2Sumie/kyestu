@@ -53,3 +53,7 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 ## D8：Chrome 自动供给（2026-08-16）
 
 浏览器解析链：`PUPPETEER_EXECUTABLE_PATH` → 系统 Chrome（channel）→ 自动下载 Chrome for Testing `142.0.7444.175`（与 idol-bbq Dockerfile 钉版一致）至 `cache/browser/chrome`。新增根级 Dockerfile（oven/bun + 钉版 Chrome deb + ffmpeg + biliup venv，`/app/tools/bin/biliup-python` 等路径与生产布局一致，导入的配置原样可用）。
+
+## D9：live-player relay 切割为独立插件（2026-08-16）
+
+爬虫的 `live_relay` 只保留纯录制（ffmpeg m3u8 归档 + 生命周期事件）；与 tv.n2nj.moe 的同步切割为独立组件 `app/live-player`（`src/components/live-player.ts`）：订阅 bus 的 `live` 频道，按 handle 匹配 targets 后 POST `/api/relay/sync`（Basic auth + WAF bypass header）。bus 从单 article 频道泛化为 `article`/`live` 双频道。导入器把 crawler `live_relay.targets` 拆出合并为单个 `live-player` 组件，handle 冲突保留先见并 warning；crawler 侧只留 `enabled`/`archive_root`。

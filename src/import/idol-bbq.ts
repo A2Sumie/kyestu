@@ -46,6 +46,7 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   const warnings: string[] = []
   const skippedProcessors = new Set<string>()
   const usedTargetIds = new Set<string>()
+  const livePlayerTargets: Record<string, any> = {}
 
   const stableConfigFingerprint = (value: unknown): string => {
     const stable = (v: unknown): string => {
@@ -66,11 +67,30 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     const id = crawler.name
     if (!id) throw new Error('crawler without a name')
     const { cfg_crawler, ...rest } = crawler
+    const withConfig = { ...rest, ...(cfg_crawler ?? {}) }
+    // live-player relay targets split into the standalone app/live-player plugin;
+    // the crawler keeps capture-only live_relay (enabled/archive_root)
+    const relayTargets = withConfig.live_relay?.targets
+    if (withConfig.live_relay && relayTargets && typeof relayTargets === 'object') {
+      for (const [handle, target] of Object.entries(relayTargets)) {
+        if (livePlayerTargets[handle]) {
+          warnings.push(`crawler '${id}': live_relay target '${handle}' already claimed by another crawler; kept first`)
+          continue
+        }
+        livePlayerTargets[handle] = target
+      }
+      const { targets: _dropped, ...captureOnly } = withConfig.live_relay
+      withConfig.live_relay = captureOnly
+    }
     components.push({
       id,
       use: `crawler/${crawlerKind(crawler)}`,
-      with: { ...rest, ...(cfg_crawler ?? {}) },
+      with: withConfig,
     })
+  }
+
+  if (Object.keys(livePlayerTargets).length > 0) {
+    components.push({ id: 'live-player', use: 'app/live-player', with: { targets: livePlayerTargets } })
   }
 
   for (const processor of old.processors ?? []) {

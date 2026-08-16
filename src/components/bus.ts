@@ -7,19 +7,37 @@ export interface ArticleEvent {
   crawlerId: string
 }
 
-type Handler = (event: ArticleEvent) => void
+/** live capture lifecycle, published by crawlers; consumed by app/live-player */
+export interface LiveEvent {
+  type: 'live' | 'ended'
+  handle: string
+  crawlerId: string
+  title?: string
+  file?: string
+  m3u8?: string
+}
 
-/** process-wide article bus: crawlers publish new articles, the router subscribes */
+interface BusEventMap {
+  article: ArticleEvent
+  live: LiveEvent
+}
+
+/** process-wide event bus: crawlers publish, router / live-player subscribe */
 export class Bus {
-  private handlers = new Set<Handler>()
+  private handlers = new Map<string, Set<(event: any) => void>>()
 
-  on(handler: Handler): () => void {
-    this.handlers.add(handler)
-    return () => this.handlers.delete(handler)
+  on<K extends keyof BusEventMap>(channel: K, handler: (event: BusEventMap[K]) => void): () => void {
+    let set = this.handlers.get(channel)
+    if (!set) {
+      set = new Set()
+      this.handlers.set(channel, set)
+    }
+    set.add(handler)
+    return () => set!.delete(handler)
   }
 
-  emit(event: ArticleEvent): void {
-    for (const handler of [...this.handlers]) {
+  emit<K extends keyof BusEventMap>(channel: K, event: BusEventMap[K]): void {
+    for (const handler of [...(this.handlers.get(channel) ?? [])]) {
       try {
         handler(event)
       } catch {

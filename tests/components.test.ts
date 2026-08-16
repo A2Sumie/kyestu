@@ -329,3 +329,66 @@ test('formatter: img/img-with-meta exempt video platforms (TikTok) to full text'
   const meta = await renderWith('img-with-meta', videoArticle)
   expect(meta.text).toContain('動画です')
 })
+
+// ---------- live player ----------
+
+test('live-player: relays bus live events to the player sync endpoint only', async () => {
+  const posts: Array<{ body: any; auth: string | null; waf: string | null }> = []
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      posts.push({
+        body: await req.json(),
+        auth: req.headers.get('authorization'),
+        waf: req.headers.get('x-n2nj-pass'),
+      })
+      return Response.json({ ok: true })
+    },
+  })
+  try {
+    const root = createRoot()
+    const registry = createRegistry()
+    defineAll(registry)
+    const loader = new Loader(root, registry)
+    await loader.load([
+      { id: 'bus', use: 'infra/bus' },
+      {
+        id: 'live-player',
+        use: 'app/live-player',
+        with: {
+          targets: {
+            shiina_satsuki227: {
+              live_player_url: `http://127.0.0.1:${server.port}`,
+              player_id: 'relay',
+              player_name: '【IG Live】椎名桜月',
+              auth_username: 'u',
+              auth_password: 'p',
+              waf_bypass_header: 'waf-token',
+            },
+          },
+        },
+      },
+    ])
+    await root.idle()
+    const { Bus } = await import('../src/components/bus')
+    const bus = root.ctx.get<InstanceType<typeof Bus>>('bus')!
+    bus.emit('live', { type: 'live', handle: 'shiina_satsuki227', crawlerId: 'ig', title: 't', file: '/tmp/a.ts' })
+    bus.emit('live', { type: 'live', handle: 'nobody', crawlerId: 'ig' })
+    const deadline = Date.now() + 5000
+    while (posts.length === 0 && Date.now() < deadline) await Bun.sleep(20)
+    expect(posts.length).toBe(1)
+    expect(posts[0]!.body).toMatchObject({
+      player_id: 'relay',
+      player_name: '【IG Live】椎名桜月',
+      handle: 'shiina_satsuki227',
+      status: 'live',
+      title: 't',
+      file: '/tmp/a.ts',
+    })
+    expect(posts[0]!.auth).toBe(`Basic ${Buffer.from('u:p').toString('base64')}`)
+    expect(posts[0]!.waf).toBe('waf-token')
+    await root.dispose()
+  } finally {
+    server.stop(true)
+  }
+})

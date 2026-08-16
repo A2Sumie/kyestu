@@ -11,6 +11,7 @@ import { qqTargetComponent } from './target-qq'
 import { bilibiliTargetComponent } from './target-bilibili'
 import { routerComponent } from './router'
 import { apiComponent } from './api'
+import { livePlayerComponent } from './live-player'
 
 export function defineInfra(registry: Registry): Registry {
   return registry
@@ -34,4 +35,5 @@ export function defineAll(registry: Registry): Registry {
     .define('target/bilibili', bilibiliTargetComponent)
     .define('app/router', routerComponent)
     .define('app/api', apiComponent)
+    .define('app/live-player', livePlayerComponent)
 }

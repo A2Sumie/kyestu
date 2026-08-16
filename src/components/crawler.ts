@@ -109,7 +109,10 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const tickSeconds = schedule?.tickSeconds ?? 15
       let nextAt = 0 // first round fires immediately
       let running = false
-      const liveRelay = config.live_relay?.enabled ? new LiveRelay(config.live_relay) : null
+      const liveRelay = config.live_relay?.enabled
+        ? // capture only; player sync lives in the app/live-player plugin
+          new LiveRelay(config.live_relay, undefined, (event) => bus.emit('live', { ...event, crawlerId: entryId }))
+        : null
       const liveStatusProbe = liveRelay ? (testLiveStatusProbe ?? defaultLiveStatusProbe) : null
 
       const persistOne = fiber.wrap(async (raw: CrawlResult): Promise<void> => {
@@ -144,7 +147,7 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
           u_avatar: raw.u_avatar ?? null,
           ...(refs ? { refs } : {}),
         } as any)
-        if (id !== null) bus.emit({ platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
+        if (id !== null) bus.emit('article', { platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
       })
 
       // production spider-manager waits a random interval_time between target

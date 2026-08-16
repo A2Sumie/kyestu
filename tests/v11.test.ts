@@ -172,22 +172,13 @@ test('biliup: builds helper args and parses the result', async () => {
 
 // ---------- live relay ----------
 
-test('live relay: starts recording + sync on live, stops + syncs on end', async () => {
-  const posts: any[] = []
-  const server = Bun.serve({
-    port: 0,
-    async fetch(req) {
-      posts.push(await req.json())
-      return Response.json({ ok: true })
-    },
-  })
-  try {
+test('live relay: starts recording + emits event on live, stops + emits on end', async () => {
+    const events: any[] = []
     const procs: any[] = []
     const relay = new LiveRelay(
       {
         enabled: true,
         archive_root: mkdtempSync(join(tmpdir(), 'kyestu-live-')),
-        targets: { member: { live_player_url: `http://127.0.0.1:${server.port}`, player_id: 'relay' } },
       },
       (() => {
         const proc = new EventEmitter() as any
@@ -195,17 +186,18 @@ test('live relay: starts recording + sync on live, stops + syncs on end', async 
         procs.push(proc)
         return proc
       }) as any,
+      (event) => {
+        events.push(event)
+      },
     )
     await relay.sync('member', { live: true, m3u8: 'https://x/live.m3u8', title: 't' })
     expect(relay.isRecording('member')).toBe(true)
     expect(procs.length).toBe(1)
     await relay.sync('member', { live: false })
     expect(relay.isRecording('member')).toBe(false)
-    expect(posts.map((p) => p.status)).toEqual(['live', 'ended'])
-    server.stop(true)
-  } finally {
-    server.stop(true)
-  }
+    expect(events.map((e) => e.type)).toEqual(['live', 'ended'])
+    expect(events[0]).toMatchObject({ handle: 'member', title: 't', m3u8: 'https://x/live.m3u8' })
+    expect(events[0].file).toContain('member-')
 })
 
 test('biliup title: production format, member name not repeated after [TT]', async () => {

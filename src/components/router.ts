@@ -56,7 +56,7 @@ export const routerComponent: Component<{ routes?: RouteDef[] }> = {
       }
     }
 
-    const off = bus.on((event) => {
+    const off = bus.on('article', (event) => {
       queue.push(event)
       void drain()
     })
