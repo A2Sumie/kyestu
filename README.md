@@ -104,14 +104,13 @@ QQ target (full segment send, rate limit, dedup); Bilibili target (text + photo 
 declarative config with hot reconcile; fiber lifecycle (partial-failure recovery, unload guard
 timeouts, ghost-write protection).
 
-**v1.1 (also in)**: summary/digest aggregation (DB-backed windows, threshold flush,
-send-first-immediately), threshold digests, media-visibility dedup windows, keyword/age/replace
-policies, X-teaser ↔ main-platform video pairing, Bilibili video upload via the vendored biliup
-helper, live relay (beta: ffmpeg record + player sync, `LiveRelay`).
+**v1.1 (also in)**: summary cards rendered with the SAME message_pack template as idol-bbq
+(vendored DefaultCard), send-first-immediately, threshold digests, media-visibility dedup windows,
+keyword/age/replace policies, X-teaser ↔ main-platform video pairing, Bilibili video upload via
+the vendored biliup helper, live relay (beta). Tag-storm detection exists (`pipeline/tag-storm.ts`)
+but is deliberately NOT wired into the send path yet.
 
-**Still deferred**: tag-storm digests, the summary card's message_pack image render (summaries
-currently send as text digests), cookie keepalive cron (an ops-side concern), showroom schedule
-extraction. Configs using those fields load; only the listed behaviors differ.
+**Still deferred**: cookie keepalive cron (an ops-side concern), showroom schedule extraction.
 
 ## Development
 

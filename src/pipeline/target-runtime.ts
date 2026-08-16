@@ -1,7 +1,9 @@
 import type { Context } from '../core/runtime'
 import type { KyestuDb } from '../components/db'
+import type { MediaStore } from '../pipeline/media'
 import { Aggregator, type AggregationConfig } from '../pipeline/aggregation'
 import { MediaVisibility, applyTextPolicies, gateByAge, gateByKeywords, type TargetPolicyConfig } from '../pipeline/policies'
+import { buildSummaryArticle, renderSummaryCard, type SummaryItem } from '../pipeline/summary-card'
 import type { RenderedPayload } from '../components/formatter'
 import type { SendInput } from '../components/target-qq'
 
@@ -75,7 +77,18 @@ export class TargetRuntime {
       this.aggregator.enqueue(
         this.targetId,
         routeKey,
-        { key: `${article.platform}:${article.a_id}`, rowId: (article as any).id ?? 0, platform: article.platform, payload: { text } },
+        {
+          key: `${article.platform}:${article.a_id}`,
+          rowId: (article as any).id ?? 0,
+          platform: article.platform,
+          payload: {
+            text,
+            username: article.username ?? article.u_id,
+            u_avatar: article.u_avatar ?? null,
+            created_at: article.created_at,
+            media: rendered.media,
+          },
+        },
         summary,
       )
       if (summary.flush_on_threshold !== false && this.aggregator.itemCount(windowId) >= (summary.threshold ?? 8)) {
@@ -115,26 +128,52 @@ export class TargetRuntime {
     const summary = this.summaryConfig()
     const threshold = summary?.threshold ?? 8
     if (items.length >= threshold) {
-      const lines = items.map((item, index) => `${index + 1}. ${item.payload?.text ?? item.article_key}`)
-      const text = `📰 本窗口摘要（${items.length} 条）\n\n${lines.join('\n')}`
-      await this.rawSend(
-        {
-          article: { platform: items[0]!.platform, a_id: items[0]!.article_key },
-          rendered: { text, media: [] },
-          route: { crawler: 'summary', formatter: null, target: this.targetId },
-        },
-        text,
-      )
+      // summary card: render the message_pack card with the shared template; fall
+      // back to a text digest only when rendering is unavailable
+      const summaryItems: SummaryItem[] = items.map((item) => ({
+        text: item.payload?.text,
+        username: item.payload?.username,
+        u_avatar: item.payload?.u_avatar,
+        created_at: item.payload?.created_at,
+        platform: item.platform,
+        media: item.payload?.media,
+      }))
+      const synthetic = buildSummaryArticle(summaryItems, { maxItemsPerGroup: summary?.max_items ?? 14 })
+      const mediaStore = this.ctx.get<MediaStore>('media-store') ?? null
+      const card = await renderSummaryCard(synthetic, mediaStore)
+      if (card) {
+        const { persistCard } = await import('../pipeline/summary-card-util')
+        const text = String(synthetic.content)
+        await this.rawSend(
+          {
+            article: { platform: items[0]!.platform, a_id: `summary-${windowId}` },
+            rendered: { text, media: [{ path: await persistCard(card), type: 'photo' }] },
+            route: { crawler: 'summary', formatter: null, target: this.targetId },
+          },
+          text,
+        )
+      } else {
+        const lines = items.map((item, index) => `${index + 1}. ${item.payload?.text ?? item.article_key}`)
+        const text = `📰 本窗口摘要（${items.length} 条）\n\n${lines.join('\n')}`
+        await this.rawSend(
+          {
+            article: { platform: items[0]!.platform, a_id: `summary-${windowId}` },
+            rendered: { text, media: [] },
+            route: { crawler: 'summary', formatter: null, target: this.targetId },
+          },
+          text,
+        )
+      }
       this.aggregator.close(windowId, 'sent')
       return
     }
-    // below threshold at due time: each item goes out natively
+    // below threshold at due time: each item goes out natively with its original media
     for (const item of items) {
       const text = String(item.payload?.text ?? item.article_key)
       await this.rawSend(
         {
           article: { platform: item.platform, a_id: item.article_key },
-          rendered: { text, media: [] },
+          rendered: { text, media: item.payload?.media ?? [] },
           route: { crawler: 'summary', formatter: null, target: this.targetId },
         },
         text,

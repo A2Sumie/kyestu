@@ -101,7 +101,7 @@ test('target runtime: summary card queues then flushes at threshold', async () =
   expect(sent).toEqual([])
   await runtime.send(article('2', 'y') as any) // hits threshold -> flush
   expect(sent.length).toBe(1)
-  expect(sent[0]).toContain('摘要')
+  expect(sent[0]).toContain('聚合')
 })
 
 test('target runtime: summary send_first_immediately sends the first item natively', async () => {

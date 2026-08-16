@@ -44,9 +44,4 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 
 ## D6：v1.1 聚合层落账（2026-08-16）
 
-聚合/摘要全部落地（DB 持久化窗口 + 阈值 flush + send_first_immediately + digest 合并 + 媒体可见性 + pairing + biliup 视频投稿 + live relay beta）。两处有意简化，与生产行为有差异：
-
-1. **摘要卡发文本摘要而非 message_pack 渲染卡**（模板渲染工程量大，先文本；不影响信息完整性，仅视觉）。
-2. **tag-storm digest 未实现**（生产参数 2 人/600s 检测/3600s 窗）；开启该配置的目标只走 digest_threshold。
-
-cookie 保活 cron 属运维脚本，不进运行时。
+聚合/摘要全部落地（DB 持久化窗口 + 阈值 flush + send_first_immediately + digest 合并 + 媒体可见性 + pairing + biliup 视频投稿 + live relay beta）。**摘要卡用与 idol-bbq 同款的 message_pack 模板渲染**（vendored `DefaultCard`，合成 `message_pack` 文章：groups/items/avatars/range 契约一致），仅渲染不可用时回退文本摘要。tag-storm 检测已实现（`pipeline/tag-storm.ts`：阈值+去重作者+检测窗/聚合窗/过期），**按决定不接进发送链路**。cookie 保活 cron 属运维脚本，不进运行时。
