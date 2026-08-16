@@ -44,8 +44,9 @@ const SOURCE_TAGS: Record<string, string> = {
 /** MM.DD_YY, e.g. 08.16_26 (production format) */
 function dateCode(timestampSeconds: number | undefined, timeZone: string): string {
   if (!timestampSeconds) return ''
+  let parts: Record<string, string>
   try {
-    var parts = new Intl.DateTimeFormat('en-CA', {
+    parts = new Intl.DateTimeFormat('en-CA', {
       timeZone,
       year: 'numeric',
       month: '2-digit',
