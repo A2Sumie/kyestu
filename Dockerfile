@@ -18,7 +18,7 @@ FROM base AS runner
 ARG CHROME_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       wget curl ca-certificates unzip ffmpeg xvfb dbus-x11 python3 python3-venv \
+       wget curl ca-certificates unzip ffmpeg xvfb dbus-x11 python3 python3-venv zstd \
        fonts-ipafont-gothic fonts-ipafont-mincho fonts-liberation fonts-noto-cjk \
        libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
        libcurl4 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libgtk-3-0 libnspr4 libnss3 \

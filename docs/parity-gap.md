@@ -14,7 +14,7 @@
 5. **x-link-ingest 做但不接**：pipeline/link-ingest.ts 独立模块（X 帖内 TikTok/YouTube/IG 链接解析抓取）。 suspicion: 与去重冲突——接入时必须走 ArticleStore.exists 同一去重键；健康期无收益，仅作故障兜底，默认不挂。
 6. **bilibili-recovery-reconciliation**：投稿失败对账恢复。
 7. **单次运行 harness 接口**（低）：POST 触发某 processor 单跑（等价 /api/actions/processors/run），顶替 codex 的 ad-hoc 用途。
-8. **DB 迁移/压缩工具**（顶替 redaction 诉求）：sqlite dump/VACUUM INTO + zstd 压缩的导出导入，ops 级小工具。
+8. ~~**DB 迁移/压缩工具**~~ ✅ 已做（2026-08-16）：`pipeline/db-archive.ts` + `scripts/db-archive.ts` CLI（export/import）。VACUUM INTO 碎片整理后压缩，zstd CLI 优先、node:zlib gzip 兜底；导入按魔数识别格式、校验 sqlite 头、覆盖前自动 .bak 备份、非空库需 --force。镜像已加 zstd 包。
 
 ## 不做（有理由）
 - redaction 全家桶（6 服务）：内容全是公共 SNS，无敏可脱。
