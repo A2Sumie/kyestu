@@ -1,7 +1,7 @@
 kyestu includes code vendored from third-party projects:
 
 - `packages/{log,utils,spider,render}` and `assets/migrations` are vendored from
-  idol-bbq (https://github.com/ChocoLZS/idol-bbq), MIT License,
+  idol-bbq (https://github.com/idol-bbq-utils/idol-bbq-utils), MIT License,
   Copyright (c) 2024 ChocoLZS.
 
 - `assets/fonts` contains fonts distributed under the SIL Open Font License 1.1;
