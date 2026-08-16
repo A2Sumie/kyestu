@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { writeFileSync, chmodSync } from 'fs'
+import { writeFileSync, chmodSync, readFileSync } from 'fs'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -205,5 +205,46 @@ test('live relay: starts recording + sync on live, stops + syncs on end', async 
     server.stop(true)
   } finally {
     server.stop(true)
+  }
+})
+
+test('biliup title: production format, member name not repeated after [TT]', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-fake-biliup-'))
+  const helper = join(dir, 'helper.py')
+  writeFileSync(
+    helper,
+    'import os, sys\nopen(os.environ["ARGV_OUT"], "w").write("\\n".join(sys.argv[1:]))\nprint("done bvid=BV1xx411c7mD aid=1")\n',
+  )
+  chmodSync(helper, 0o755)
+  const cookie = join(dir, 'cookies.json')
+  writeFileSync(cookie, JSON.stringify({ cookie_info: { cookies: [{ name: 'SESSDATA', value: 'x' }, { name: 'bili_jct', value: 'y' }] } }))
+  const video = join(dir, 'v.mp4')
+  writeFileSync(video, 'fake')
+  const argvOut = join(dir, 'argv.txt')
+  process.env.ARGV_OUT = argvOut
+  try {
+    await uploadVideo(
+      { cookie_file: cookie, helper_path: helper },
+      {
+        videoPaths: [video],
+        article: {
+          a_id: '9',
+          u_id: 'mochizuki_rino',
+          username: '望月りの',
+          url: 'https://www.tiktok.com/@mochizuki_rino/video/9',
+          content: '元のキャプション',
+          translation: '用粉丝送我的プリキット试着跳了舞',
+          platform: 'tiktok',
+          created_at: Date.parse('2026-08-16T12:00:00+09:00') / 1000,
+        },
+      },
+    )
+    const argv = readFileSync(argvOut, 'utf8').split('\n')
+    const title = argv[argv.indexOf('--title') + 1]!
+    expect(title).toBe('【22/7 望月りの】[TT] 08.16_26 用粉丝送我的プリキット试着跳了舞')
+    expect(title).not.toContain('望月りの 08.16')
+    expect(title).not.toContain('元のキャプション') // translated caption wins
+  } finally {
+    delete process.env.ARGV_OUT
   }
 })

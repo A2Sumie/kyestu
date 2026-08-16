@@ -19,12 +19,13 @@ export interface BiliupUploadConfig {
   threads?: number
   title_template?: string
   desc_template?: string
+  timezone?: string
 }
 
 export interface UploadInput {
   videoPaths: string[]
   coverPath?: string
-  article: { a_id: string; u_id: string; username?: string; url: string; content?: string | null; platform?: string }
+  article: { a_id: string; u_id: string; username?: string; url: string; content?: string | null; translation?: string | null; platform?: string; created_at?: number }
 }
 
 export interface UploadResult {
@@ -32,16 +33,56 @@ export interface UploadResult {
   aid?: number
 }
 
-function renderTemplate(template: string, article: UploadInput['article']): string {
-  const headline = (article.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
+const SOURCE_TAGS: Record<string, string> = {
+  twitter: 'X',
+  tiktok: 'TT',
+  instagram: 'ins',
+  youtube: 'YT',
+  website: 'blog',
+}
+
+/** MM.DD_YY, e.g. 08.16_26 (production format) */
+function dateCode(timestampSeconds: number | undefined, timeZone: string): string {
+  if (!timestampSeconds) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  })
+    .formatToParts(new Date(timestampSeconds * 1000))
+    .reduce<Record<string, string>>((acc, part) => {
+      if (part.type !== 'literal') acc[part.type] = part.value
+      return acc
+    }, {})
+  return `${parts.month}.${parts.day}_${String(parts.year ?? '').slice(-2)}`
+}
+
+function renderTemplate(template: string, article: UploadInput['article'], timeZone: string): string {
+  const displayName = article.username ?? article.u_id
+  const accountTitle = displayName ? (displayName.startsWith('22/7') ? displayName : `22/7 ${displayName}`) : ''
+  // translated text first: production titles use the translated caption
+  const caption = (article.translation ?? article.content ?? '').split('\n')[0] ?? ''
+  const headline = caption.replace(/\s+/g, ' ').trim().slice(0, 40)
+  // upload_summary drops the display name on purpose: account_title already
+  // carries it, repeating it after [TT]/[X] reads as a stutter
+  const uploadSummary = [dateCode(article.created_at, timeZone), headline].filter(Boolean).join(' ')
   return template
+    .replaceAll('{account_title}', accountTitle)
+    .replaceAll('{source_tag}', SOURCE_TAGS[article.platform ?? ''] ?? '社媒')
+    .replaceAll('{date_code}', dateCode(article.created_at, timeZone))
+    .replaceAll('{upload_summary}', uploadSummary)
     .replaceAll('{u_id}', article.u_id)
-    .replaceAll('{username}', article.username ?? article.u_id)
+    .replaceAll('{username}', displayName)
     .replaceAll('{platform}', article.platform ?? '')
     .replaceAll('{headline}', headline)
     .replaceAll('{a_id}', article.a_id)
     .replaceAll('{content}', article.content ?? '')
     .replaceAll('{url}', article.url)
+    .replace(/【】/g, '')
+    .replace(/\[\]/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 }
 
 export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput): Promise<UploadResult> {
@@ -71,8 +112,9 @@ export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput
     const cookiePath = join(uploadDir, 'cookies.json')
     writeFileSync(cookiePath, JSON.stringify(cookieDoc, null, 2))
 
-    const title = renderTemplate(config.title_template ?? '【{username}】{headline}', input.article).slice(0, 80)
-    const desc = renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article)
+    const timeZone = config.timezone ?? 'Asia/Tokyo'
+    const title = renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone).slice(0, 80)
+    const desc = renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article, timeZone)
 
     const args = [
       helperPath,

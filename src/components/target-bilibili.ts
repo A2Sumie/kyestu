@@ -204,6 +204,7 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
           tags: config.video_upload?.tags,
           title_template: config.video_upload?.title_template,
           desc_template: config.video_upload?.desc_template,
+          timezone: config.video_upload?.timezone ?? config.timezone,
           python_path: config.video_upload?.python_path,
           helper_path: config.video_upload?.helper_path,
         },

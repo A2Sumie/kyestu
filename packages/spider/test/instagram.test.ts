@@ -1071,3 +1071,62 @@ test('Instagram grabPosts fails fast when the profile payload reveals a private 
         /private and the current viewer is not following/,
     )
 })
+
+test('Instagram grabPosts backfills missing avatars via web_profile_info (with cache)', async () => {
+    const postsJson = {
+        data: {
+            xdt_api__v1__feed__user_timeline_graphql_connection: {
+                edges: [
+                    {
+                        node: {
+                            code: 'CAV1',
+                            taken_at: 1786465200,
+                            caption: { text: 'post without avatar' },
+                            user: { username: 'member_a', full_name: 'Member A' },
+                        },
+                    },
+                ],
+            },
+        },
+    }
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    let evaluateCalls = 0
+    const page = {
+        on: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(eventName, [...(listeners.get(eventName) || []), handler])
+        },
+        off: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(eventName, (listeners.get(eventName) || []).filter((entry) => entry !== handler))
+        },
+        goto: async () => {
+            for (const handler of listeners.get('response') || []) {
+                handler({
+                    url: () => 'https://www.instagram.com/ajax/bulk-route-definitions/',
+                    status: () => 200,
+                    json: async () => postsJson,
+                    request: () => ({
+                        method: () => 'POST',
+                        postData: () => 'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                    }),
+                })
+            }
+        },
+        waitForSelector: async () => {
+            throw new Error('not found')
+        },
+        evaluate: async () => {
+            evaluateCalls++
+            return 'https://cdn.example.com/avatar_a.jpg'
+        },
+    } as any
+
+    const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/member_a/')
+    expect(posts.length).toBe(1)
+    expect(posts[0]!.u_avatar).toBe('https://cdn.example.com/avatar_a.jpg')
+    expect(evaluateCalls).toBe(1)
+
+    // second round: avatar cache serves it without another page-context fetch
+    const again = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/member_a/')
+    expect(again[0]!.u_avatar).toBe('https://cdn.example.com/avatar_a.jpg')
+    expect(evaluateCalls).toBe(1)
+})

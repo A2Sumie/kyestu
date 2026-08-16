@@ -849,6 +849,69 @@ namespace InsApiJsonParser {
         return { posts, highlightsJson, profileJson: null }
     }
 
+    const AVATAR_CACHE_TTL_MS = 3_600_000
+    const AVATAR_CACHE = new Map<string, { url: string | null; expiresAt: number }>()
+
+    // The XDT timeline / profile graphql payloads intermittently drop the avatar
+    // fields; web_profile_info still returns them and works same-origin with the
+    // page's session. Used only as a backfill for posts that came out avatar-less.
+    async function fetchAvatarViaWebProfileInfo(page: Page, handle: string): Promise<string | null> {
+        if (!handle) {
+            return null
+        }
+        const cached = AVATAR_CACHE.get(handle)
+        if (cached && cached.expiresAt > Date.now()) {
+            return cached.url
+        }
+        let url: unknown = null
+        try {
+            url = await (page as any).evaluate?.(
+                async (h: string) => {
+                    try {
+                        const res = await fetch(
+                            `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(h)}`,
+                            { headers: { 'X-IG-App-ID': '936619743392459' }, credentials: 'include' },
+                        )
+                        if (!res.ok) {
+                            return null
+                        }
+                        const user = (await res.json())?.data?.user
+                        return user?.hd_profile_pic_url_info?.url || user?.profile_pic_url_hd || user?.profile_pic_url || null
+                    } catch {
+                        return null
+                    }
+                },
+                handle,
+            )
+        } catch {
+            url = null
+        }
+        const normalized = normalizeInstagramUrl(url)
+        AVATAR_CACHE.set(handle, { url: normalized, expiresAt: Date.now() + AVATAR_CACHE_TTL_MS })
+        return normalized
+    }
+
+    async function backfillMissingAvatars(page: Page, posts: Array<GenericArticle<Platform.Instagram>>): Promise<void> {
+        const missing = new Map<string, Array<GenericArticle<Platform.Instagram>>>()
+        for (const post of posts) {
+            if (post.u_avatar || !post.u_id) {
+                continue
+            }
+            const list = missing.get(post.u_id) ?? []
+            list.push(post)
+            missing.set(post.u_id, list)
+        }
+        for (const [handle, items] of missing) {
+            const url = await fetchAvatarViaWebProfileInfo(page, handle)
+            if (!url) {
+                continue
+            }
+            for (const post of items) {
+                post.u_avatar = url
+            }
+        }
+    }
+
     export async function grabPostsAndHighlights(
         page: Page,
         url: string,
@@ -911,6 +974,7 @@ namespace InsApiJsonParser {
                 // caller falls back to the dedicated highlights navigation
             }
         }
+        await backfillMissingAvatars(page, posts)
         return { posts, highlights }
     }
 
