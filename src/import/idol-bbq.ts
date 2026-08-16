@@ -45,6 +45,22 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   const components: KyestuConfig['components'] = []
   const warnings: string[] = []
   const skippedProcessors = new Set<string>()
+  const usedTargetIds = new Set<string>()
+
+  const stableConfigFingerprint = (value: unknown): string => {
+    const stable = (v: unknown): string => {
+      if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null'
+      if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`
+      return `{${Object.keys(v as Record<string, unknown>)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stable((v as Record<string, unknown>)[key])}`)
+        .join(',')}}`
+    }
+    let hash = 0
+    const text = stable(value)
+    for (let i = 0; i < text.length; i += 1) hash = (hash * 31 + text.charCodeAt(i)) >>> 0
+    return hash.toString(36).slice(0, 8)
+  }
 
   for (const crawler of old.crawlers ?? []) {
     const id = crawler.name
@@ -89,7 +105,19 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   }
 
   for (const target of old.forward_targets ?? []) {
-    const id = target.id ?? `${target.platform}-${JSON.stringify(target.cfg_platform ?? {}).length}`
+    const explicitId = typeof target.id === 'string' && target.id ? target.id : undefined
+    let id = explicitId
+    if (!id) {
+      // no explicit id: derive a stable one from platform + config content (a
+      // length-based id collides the moment two same-platform configs tie)
+      id = `${target.platform}-${stableConfigFingerprint(target.cfg_platform ?? {})}`
+      warnings.push(`forward_target without id: derived '${id}'`)
+    }
+    if (usedTargetIds.has(id)) {
+      warnings.push(`duplicate forward_target id '${id}': entry skipped`)
+      continue
+    }
+    usedTargetIds.add(id)
     components.push({
       id,
       use: `target/${target.platform}`,

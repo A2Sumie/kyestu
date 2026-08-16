@@ -70,3 +70,19 @@ test('imported config compiles to entries with correct needs', () => {
   expect(needs['b站']).toEqual(['fmt-text'])
   expect(needs['api']).toEqual([])
 })
+
+// ---------- regression: id-less forward targets get stable, collision-safe ids ----------
+
+test('forward targets without ids derive from config content, not its length', () => {
+  const config = convertIdolBbqConfig({
+    forward_targets: [
+      { platform: 'qq', cfg_platform: { group_id: 111, url: 'http://a' } }, // same-length cfgs
+      { platform: 'qq', cfg_platform: { group_id: 222, url: 'http://b' } }, // would collide on length
+      { platform: 'qq', cfg_platform: { group_id: 111, url: 'http://a' } }, // true duplicate
+    ],
+  })
+  const targetIds = config.components.filter((c) => c.use.startsWith('target/')).map((c) => c.id)
+  expect(new Set(targetIds).size).toBe(2)
+  expect((config as any).warnings.some((w: string) => w.includes('duplicate forward_target id'))).toBe(true)
+  expect((config as any).warnings.some((w: string) => w.includes('without id'))).toBe(true)
+})
