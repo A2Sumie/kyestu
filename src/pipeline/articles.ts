@@ -99,6 +99,14 @@ export class ArticleStore {
     return null
   }
 
+  /** full row by platform + a_id (short-video dedup compares candidate text) */
+  getByAId(platform: Platform, aId: string): { id: number; a_id: string; content: string | null; translation: string | null; created_at: number } | null {
+    const row = this.store.db
+      .query(`SELECT id, a_id, content, translation, created_at FROM ${TABLES[platform]} WHERE a_id = ? LIMIT 1`)
+      .get(aId) as any
+    return row ? { id: Number(row.id), a_id: row.a_id, content: row.content, translation: row.translation, created_at: row.created_at } : null
+  }
+
   get(platform: Platform, id: number): (StoredArticle & { id: number }) | null {
     const row = this.store.db.query(`SELECT * FROM ${TABLES[platform]} WHERE id = ?`).get(id) as any
     if (!row) return null

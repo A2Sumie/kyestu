@@ -5,6 +5,7 @@ import { articleKey, outboundKey, OutboundStore } from '../pipeline/outbound'
 import { registerBilibiliRecoveryTarget } from '../pipeline/bilibili-reconcile'
 import { TargetRuntime } from '../pipeline/target-runtime'
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
+import { ShortVideoDedup } from '../pipeline/short-video-dedup'
 import { uploadVideo } from '../pipeline/biliup'
 import type { SendInput, TargetApi } from './target-qq'
 import type { RenderedPayload } from './formatter'
@@ -240,6 +241,22 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
         }
       }
       const cover = input.rendered.media.find((m) => m.type === 'photo')?.path
+      // cross-platform short-video dedup: claim-before-upload (idol-bbq's
+      // check-then-mark-after-upload raced simultaneous IG/TT arrivals)
+      const dedup = new ShortVideoDedup(db)
+      const duplicate =
+        config.video_upload?.dedup === false
+          ? null
+          : dedup.checkOrClaim({
+              platform: article.platform,
+              a_id: article.a_id,
+              u_id: article.u_id,
+              content: article.content,
+              translation: (article as any).translation,
+              created_at: article.created_at,
+              type: article.type,
+            })
+      if (duplicate) return // same short video already uploaded from another platform
       const result = await uploadVideo(
         {
           cookie_file: config.video_upload?.cookie_file ?? config.cookie_file,
