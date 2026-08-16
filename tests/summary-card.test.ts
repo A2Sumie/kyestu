@@ -97,3 +97,23 @@ test('tag storm: single author spam never triggers; window expiry exits digest m
 test('extractHashtags: dedup + case-insensitive', () => {
   expect(extractHashtags('a #Live 快看 #live #開演')).toEqual(['live', '開演'])
 })
+
+// ---------- regression: local-path media in items hydrates to dataURL ----------
+
+test('summary card: local store paths hydrate instead of failing fetch', async () => {
+  const { writeFileSync, mkdtempSync } = await import('fs')
+  const { join } = await import('path')
+  const { tmpdir } = await import('os')
+  const { buildSummaryArticle, renderSummaryCard } = await import('../src/pipeline/summary-card')
+  const { MediaStore } = await import('../src/pipeline/media')
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-sumcard-'))
+  const pngPath = join(dir, 'a.png')
+  writeFileSync(pngPath, Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex'))
+  const store = new MediaStore(dir)
+  const article = buildSummaryArticle([{ text: 'hello', media: [{ type: 'photo', url: undefined, path: pngPath }] } as any])
+  const card = await renderSummaryCard(article, store)
+  // render may still fail for fonts in this harness; the assertion is that
+  // hydration did not throw and the media url became a data: URL
+  const item = article.extra.data.groups[0].items[0]
+  expect(item.media[0].url.startsWith('data:image/')).toBe(true)
+})

@@ -97,7 +97,8 @@ async function hydrateSummaryMedia(article: any, mediaStore: MediaStore | null):
       for (const media of item.media ?? []) {
         if (!media?.url || media.url.startsWith('data:')) continue
         try {
-          const path = await mediaStore.download(media.url)
+          const path = await resolveSummaryMediaPath(media.url, mediaStore)
+          if (!path) continue
           media.url = `data:image/${path.endsWith('.png') ? 'png' : 'jpeg'};base64,${readFileSync(path).toString('base64')}`
         } catch {
           // leave the URL; satori will try the network
@@ -106,6 +107,17 @@ async function hydrateSummaryMedia(article: any, mediaStore: MediaStore | null):
     }
   }
   return article
+}
+
+/** aggregation payloads carry local store paths (not URLs); fetch would fail on those */
+async function resolveSummaryMediaPath(url: string, mediaStore: MediaStore): Promise<string | null> {
+  if (/^(https?:)?\/\//.test(url) || url.startsWith('data:')) {
+    return await mediaStore.download(url)
+  }
+  const { isAbsolute } = await import('path')
+  const { existsSync } = await import('fs')
+  if (isAbsolute(url) && existsSync(url)) return url
+  return null
 }
 
 export async function renderSummaryCard(article: any, mediaStore: MediaStore | null): Promise<Buffer | null> {
