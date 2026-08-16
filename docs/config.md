@@ -68,7 +68,8 @@ bun scripts/import-idol-bbq.ts <idol-bbq/assets/config.yaml> kyestu.config.yaml
 ```
 
 - crawlers → `crawler/<kind>`（按 origin/websites 识别平台；x.com/i/lists → `crawler/x-list`）
-- processors → `processor/<provider kebab>`；formatters → `formatter/<render_type>`；targets → `target/<platform>`
+- processors → `processor/openai`（按协议命名；`wire_api` 推断：显式值 > base_url 含 `/responses` > 默认 chat_completions；Google/Deepseek v1/Mechanical 跳过并 warning）
+- formatters → `formatter/<render_type>`；targets → `target/<platform>`
 - connections 五图 → routes（crawler→formatter→target 主流；crawler-processor 翻成 `processor → crawler` 的服务边）
 - 顶层 `cfg_*` → `defaults:`；`api`/`live_capture` → `app/*` 组件
 - forwarder 的 origin 自动绑定是遗留行为，不导入（输出 warning，需要时手工补 route）

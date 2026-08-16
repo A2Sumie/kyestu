@@ -8,7 +8,9 @@ const sample = {
     { name: 'IG高频', origin: 'https://www.instagram.com', paths: ['user_a'], cfg_crawler: { cookie_file: 'ig.txt' } },
   ],
   processors: [
-    { id: 'ja-zh', name: '日中翻译', provider: 'DeepSeekV4Flash', api_key: 'env:DEEPSEEK_API_KEY', cfg_processor: { action: 'translate', model_id: 'deepseek-v4-flash' } },
+    { id: 'ja-zh', name: '日中翻译', provider: 'DeepSeekV4Flash', api_key: 'env:DEEPSEEK_API_KEY', cfg_processor: { action: 'translate', model_id: 'deepseek-v4-flash', wire_api: 'responses' } },
+    { id: 'old-google', provider: 'Google', cfg_processor: { action: 'translate' } },
+    { id: 'hy3', provider: 'Hy3Free', cfg_processor: { action: 'translate', base_url: 'https://hunyuan.example.com/v1' } },
   ],
   formatters: [
     { id: 'fmt-card', name: '卡片', render_type: 'img-tag', deduplication: true },
@@ -35,8 +37,11 @@ test('converts crawlers/processors/formatters/targets with kind detection and de
   expect(byId.get('X主列表')!.use).toBe('crawler/x-list')
   expect(byId.get('X主列表')!.with).toMatchObject({ session_profile: 'x-main' })
   expect(byId.get('IG高频')!.use).toBe('crawler/instagram')
-  expect(byId.get('ja-zh')!.use).toBe('processor/deepseek-v4-flash')
-  expect(byId.get('ja-zh')!.with).toMatchObject({ action: 'translate', api_key: 'env:DEEPSEEK_API_KEY' })
+  expect(byId.get('ja-zh')!.use).toBe('processor/openai')
+  expect(byId.get('ja-zh')!.with).toMatchObject({ action: 'translate', api_key: 'env:DEEPSEEK_API_KEY', wire_api: 'responses' })
+  expect(byId.has('old-google')).toBe(false) // dropped legacy provider
+  expect(byId.get('hy3')!.use).toBe('processor/openai')
+  expect(byId.get('hy3')!.with!.wire_api).toBe('chat_completions') // Hy3 = chat completions protocol
   expect(byId.get('fmt-card')!.use).toBe('formatter/img-tag')
   expect(byId.get('群1')!.use).toBe('target/qq')
   expect(byId.get('api')!.use).toBe('app/api')

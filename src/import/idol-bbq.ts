@@ -5,18 +5,25 @@ import type { KyestuConfig, RouteDef } from '../config/schema'
  * Structure only — `with` payloads are carried over verbatim.
  */
 
-const KNOWN_PROVIDERS: Record<string, string> = {
-  DeepSeekV4Flash: 'deepseek-v4-flash',
-  DeepSeekV4Pro: 'deepseek-v4-pro',
-  Hy3Free: 'hy3-free',
-  Google: 'google',
-  OpenaiLike: 'openai-like',
-  Mechanical: 'mechanical',
+/**
+ * LLM processors in kyestu are named by wire protocol, not by vendor/model:
+ * DeepSeek V4 (wire_api: responses) and Hy3 (chat completions) are both the
+ * OpenAI protocol family. The production config is never modified; the mapping
+ * happens only here.
+ */
+const PROVIDER_PROTOCOL: Record<string, string> = {
+  DeepSeekV4Flash: 'openai',
+  DeepSeekV4Pro: 'openai',
+  Hy3Free: 'openai',
+  OpenaiLike: 'openai',
 }
 
-function kebab(value: string): string {
-  if (KNOWN_PROVIDERS[value]) return KNOWN_PROVIDERS[value]
-  return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/[_\s]+/g, '-').toLowerCase()
+const DROPPED_PROVIDERS = new Set(['Google', 'Deepseek', 'Mechanical'])
+
+function inferWireApi(cfgProcessor: any): string {
+  if (cfgProcessor?.wire_api) return cfgProcessor.wire_api
+  if (String(cfgProcessor?.base_url ?? '').includes('/responses')) return 'responses'
+  return 'chat_completions'
 }
 
 function crawlerKind(crawler: any): string {
@@ -37,6 +44,7 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   if (!old || typeof old !== 'object') throw new Error('invalid idol-bbq config')
   const components: KyestuConfig['components'] = []
   const warnings: string[] = []
+  const skippedProcessors = new Set<string>()
 
   for (const crawler of old.crawlers ?? []) {
     const id = crawler.name
@@ -52,10 +60,21 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   for (const processor of old.processors ?? []) {
     if (!processor.id) throw new Error('processor without an id')
     const { id, provider, cfg_processor, ...rest } = processor
+    if (DROPPED_PROVIDERS.has(provider)) {
+      warnings.push(`processor '${id}': provider '${provider}' is dropped in kyestu (unused legacy); entry skipped`)
+      skippedProcessors.add(id)
+      continue
+    }
+    const protocol = PROVIDER_PROTOCOL[provider]
+    if (!protocol) {
+      warnings.push(`processor '${id}': unknown provider '${provider}'; entry skipped`)
+      skippedProcessors.add(id)
+      continue
+    }
     components.push({
       id,
-      use: `processor/${kebab(provider ?? 'unknown')}`,
-      with: { ...rest, ...(cfg_processor ?? {}) },
+      use: `processor/${protocol}`,
+      with: { ...rest, ...(cfg_processor ?? {}), wire_api: inferWireApi(cfg_processor) },
     })
   }
 
@@ -117,6 +136,7 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     }
   }
   for (const [processorId, formatterIds] of Object.entries(processorFormatter)) {
+    if (skippedProcessors.has(processorId)) continue
     const owners = Object.entries(crawlerProcessor)
       .filter(([, p]) => p === processorId)
       .map(([c]) => c)
@@ -129,6 +149,10 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   // crawler->processor is a standalone service edge (crawl-time translation):
   // the crawler depends on the processor, so the edge points processor -> crawler
   for (const [crawlerName, processorId] of Object.entries(crawlerProcessor)) {
+    if (skippedProcessors.has(processorId)) {
+      warnings.push(`crawler '${crawlerName}': link to dropped processor '${processorId}' removed`)
+      continue
+    }
     pushRoute(processorId, [], [crawlerName])
   }
   for (const [forwarderName, targetIds] of Object.entries(forwarderTarget)) {

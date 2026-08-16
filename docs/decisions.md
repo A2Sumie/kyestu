@@ -23,14 +23,21 @@ API 命名对齐论文 Table 2（ctx.effect / ctx.set / ctx.get / ctx.isolate / 
 
 当前生产配置无死组件（3 processor / 6 formatter / 5 target 全在用；唯一无路由 crawler 是 IG Live 抢抓，live_relay 设计上不需要路由）。死组件全部在**代码注册表**层——即用户记忆中的"早期 LLM/翻译组件"：
 
-不移植（kyestu registry 不定义）：
+不按原名移植（kyestu registry 不定义厂商名组件）：
 
-- `GoogleLLMTranslator`（配置零引用；唯一代码引用是 task-manager AggregateDaily 的兜底 provider 名，而当前配置不产生 AggregateDaily 任务）
-- `DeepSeekLLMTranslator`（legacy v1，被 V4Flash/V4Pro 取代）
-- `OpenaiLikeLLMTranslator`
-- `Hy3FreeTranslator`（8 月实验期用过，已回退 V4Flash；其熔断器语义由 kyestu 的 broker 健康态泛化承接）
-- `DeepSeekV4ProTranslator`（仅作为 Hy3Free 内嵌 fallback 存在，Hy3 不移植则它无对象）
-- `MechanicalProcessor`（注册但零引用）
-- spider：`website-leap`（leap-projects.jp，另一企划）、`messageboard`（需专用开关，未启用）
+- `GoogleLLMTranslator`（配置零引用；唯一代码引用是 task-manager AggregateDaily 的兜底 provider 名，而当前配置不产生 AggregateDaily 任务）——彻底不移植
+- `DeepSeekLLMTranslator`（legacy v1，被 V4Flash/V4Pro 取代）——彻底不移植
+- `MechanicalProcessor`（注册但零引用）——彻底不移植
+- `OpenaiLikeLLMTranslator` / `Hy3FreeTranslator` / `DeepSeekV4ProTranslator` / `DeepSeekV4FlashTranslator`——厂商名不移植，协议形态由 `processor/openai` 承接（见 D5）
+- spider：`website-leap`、`messageboard` **保留**（均为自家服务）
 
-移植：processor 仅 `deepseek-v4-flash`（含 fallback 链语义）；spider 为 x-list、x-timeline、instagram、tiktok、youtube、website-227；`x-status` 配置虽零引用但被 api-manager 的 x-link 即时动作内部依赖，作为 x 族内部能力保留。
+移植：spider 为 x-list、x-timeline、instagram、tiktok、youtube、website-227、website-leap、messageboard；`x-status` 配置虽零引用但被 api-manager 的 x-link 即时动作内部依赖，作为 x 族内部能力保留。
+
+## D5：LLM 组件按协议命名，不按厂商模型命名（2026-08-16）
+
+kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` 区分协议：
+
+- DeepSeek V4 Flash/Pro（`wire_api: responses` + chat fallback 链）→ `processor/openai`，`wire_api: responses`
+- Hy3（OpenAI chat completions 协议）→ `processor/openai`，`wire_api: chat_completions`
+
+生产配置不动，映射只发生在导入器（`PROVIDER_PROTOCOL` + `inferWireApi`：显式 `wire_api` > base_url 含 `/responses` > 默认 chat_completions）。被丢弃 provider（Google/Deepseek v1/Mechanical）的条目与其连接边一并跳过并输出 warning。
