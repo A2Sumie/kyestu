@@ -1,0 +1,155 @@
+import type { Context } from '../core/runtime'
+import type { KyestuDb } from '../components/db'
+import { Aggregator, type AggregationConfig } from '../pipeline/aggregation'
+import { MediaVisibility, applyTextPolicies, gateByAge, gateByKeywords, type TargetPolicyConfig } from '../pipeline/policies'
+import type { RenderedPayload } from '../components/formatter'
+import type { SendInput } from '../components/target-qq'
+
+/**
+ * Shared target send path: policies -> aggregation routing -> raw send.
+ * The raw send is supplied by each target component (QQ / Bilibili).
+ */
+
+export interface TargetRuntimeConfig extends TargetPolicyConfig {
+  digest_threshold?: number
+  summary_card?: AggregationConfig | boolean
+}
+
+export class TargetRuntime {
+  private readonly aggregator: Aggregator
+  private readonly visibility: MediaVisibility
+  private digestBuffer: Array<{ input: SendInput; text: string }> = []
+  private firstSentWindows = new Set<number>()
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly db: KyestuDb,
+    private readonly targetId: string,
+    private readonly config: TargetRuntimeConfig,
+    private readonly rawSend: (input: SendInput, text: string) => Promise<void>,
+  ) {
+    this.aggregator = new Aggregator(db)
+    this.visibility = new MediaVisibility(db)
+  }
+
+  private summaryConfig(): AggregationConfig | null {
+    const raw = this.config.summary_card
+    if (raw === true) return { enabled: true }
+    if (raw && typeof raw === 'object' && raw.enabled !== false) return raw
+    return null
+  }
+
+  async send(input: SendInput): Promise<void> {
+    const article = input.article as any
+    const text = applyTextPolicies(input.rendered.text, this.config)
+    if (!gateByKeywords(`${text}\n${article.content ?? ''}`, this.config)) return
+    if (!gateByAge(article.created_at, this.config)) return
+
+    // media visibility: repeated media go text-only or skip entirely
+    let rendered = input.rendered
+    const visibilityCfg = this.config.media_visibility
+    if (visibilityCfg && rendered.media.length) {
+      const kept = []
+      for (const media of rendered.media) {
+        const verdict = this.visibility.check(this.targetId, media.path, visibilityCfg)
+        if (verdict === 'visible') kept.push(media)
+      }
+      if (kept.length === 0 && rendered.media.length > 0) {
+        if (visibilityCfg.duplicate_behavior === 'skip') return
+        rendered = { ...rendered, media: [] }
+      } else {
+        rendered = { ...rendered, media: kept }
+      }
+    }
+
+    const summary = this.summaryConfig()
+    if (summary) {
+      const routeKey = `${input.route.crawler}|${input.route.formatter ?? '-'}|${input.route.target}`
+      const windowId = this.aggregator.ensureWindow(this.targetId, routeKey, summary)
+      if (summary.send_first_immediately !== false && !this.firstSentWindows.has(windowId)) {
+        await this.rawSend({ ...input, rendered }, text)
+        this.firstSentWindows.add(windowId)
+        this.recordVisibility(rendered)
+        return
+      }
+      this.aggregator.enqueue(
+        this.targetId,
+        routeKey,
+        { key: `${article.platform}:${article.a_id}`, rowId: (article as any).id ?? 0, platform: article.platform, payload: { text } },
+        summary,
+      )
+      if (summary.flush_on_threshold !== false && this.aggregator.itemCount(windowId) >= (summary.threshold ?? 8)) {
+        await this.flush(windowId)
+      }
+      return
+    }
+
+    const digestThreshold = this.config.digest_threshold ?? 0
+    if (digestThreshold >= 2) {
+      this.digestBuffer.push({ input: { ...input, rendered }, text })
+      if (this.digestBuffer.length >= digestThreshold) {
+        const batch = this.digestBuffer.splice(0, this.digestBuffer.length)
+        const mergedText = batch.map((b) => b.text).filter(Boolean).join('\n———\n')
+        const mergedMedia = batch.flatMap((b) => b.input.rendered.media)
+        await this.rawSend({ ...batch[0]!.input, rendered: { text: mergedText, media: mergedMedia } }, mergedText)
+        for (const b of batch) this.recordVisibility(b.input.rendered)
+      }
+      return
+    }
+
+    await this.rawSend({ ...input, rendered }, text)
+    this.recordVisibility(rendered)
+  }
+
+  private recordVisibility(rendered: RenderedPayload): void {
+    for (const media of rendered.media) this.visibility.record(this.targetId, media.path, '')
+  }
+
+  /** flush one due window: batch as summary text; under threshold items go natively */
+  async flush(windowId: number): Promise<void> {
+    const items = this.aggregator.items(windowId)
+    if (items.length === 0) {
+      this.aggregator.close(windowId, 'dropped')
+      return
+    }
+    const summary = this.summaryConfig()
+    const threshold = summary?.threshold ?? 8
+    if (items.length >= threshold) {
+      const lines = items.map((item, index) => `${index + 1}. ${item.payload?.text ?? item.article_key}`)
+      const text = `📰 本窗口摘要（${items.length} 条）\n\n${lines.join('\n')}`
+      await this.rawSend(
+        {
+          article: { platform: items[0]!.platform, a_id: items[0]!.article_key },
+          rendered: { text, media: [] },
+          route: { crawler: 'summary', formatter: null, target: this.targetId },
+        },
+        text,
+      )
+      this.aggregator.close(windowId, 'sent')
+      return
+    }
+    // below threshold at due time: each item goes out natively
+    for (const item of items) {
+      const text = String(item.payload?.text ?? item.article_key)
+      await this.rawSend(
+        {
+          article: { platform: item.platform, a_id: item.article_key },
+          rendered: { text, media: [] },
+          route: { crawler: 'summary', formatter: null, target: this.targetId },
+        },
+        text,
+      )
+    }
+    this.aggregator.close(windowId, 'sent')
+  }
+
+  /** periodic flush sweep; returns a dispose */
+  startFlushLoop(intervalMs = 30_000): () => void {
+    const timer = setInterval(() => {
+      for (const window of this.aggregator.due(this.targetId)) {
+        this.flush(window.id).catch((error) => this.ctx.root.reportTaint(this.ctx.fiber, 'apply', error))
+      }
+    }, intervalMs)
+    return () => clearInterval(timer)
+  }
+}

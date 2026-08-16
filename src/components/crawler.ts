@@ -4,6 +4,7 @@ import type { KyestuDb } from './db'
 import { ArticleStore } from '../pipeline/articles'
 import { CooldownMap, classifyCrawlError, shouldRetry } from '../pipeline/cooldown'
 import { nextRunAt, resolveCrawlerSchedule } from '../pipeline/schedule'
+import { LiveRelay } from '../pipeline/live-relay'
 import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus } from './bus'
 import type { BrowserSessionPool } from './browser-pool'
@@ -69,6 +70,15 @@ export function setCrawlDriverForTest(driver: CrawlDriver | null): void {
   testDriver = driver
 }
 
+export type LiveStatusProbe = (url: string) => Promise<{ live: boolean; m3u8?: string; title?: string }>
+
+let testLiveStatusProbe: LiveStatusProbe | null = null
+export function setLiveStatusProbeForTest(probe: LiveStatusProbe | null): void {
+  testLiveStatusProbe = probe
+}
+
+const defaultLiveStatusProbe: LiveStatusProbe = async () => ({ live: false })
+
 function buildUrls(config: Record<string, any>): string[] {
   if (Array.isArray(config.websites) && config.websites.length) return config.websites
   const origin = String(config.origin ?? '').replace(/\/+$/, '')
@@ -99,6 +109,8 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const tickSeconds = schedule?.tickSeconds ?? 15
       let nextAt = 0 // first round fires immediately
       let running = false
+      const liveRelay = config.live_relay?.enabled ? new LiveRelay(config.live_relay) : null
+      const liveStatusProbe = liveRelay ? (testLiveStatusProbe ?? defaultLiveStatusProbe) : null
 
       const persistOne = async (raw: CrawlResult): Promise<void> => {
         const platformName = PLATFORM_NAME[raw.platform] ?? platform
@@ -148,6 +160,10 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
               try {
                 const results = await (testDriver ?? defaultDriver)({ kind, url, config, browser })
                 for (const raw of results) await persistOne(raw)
+                if (liveRelay && liveStatusProbe) {
+                  const handle = url.split('/').filter(Boolean).pop() ?? url
+                  await liveRelay.sync(handle, await liveStatusProbe(url)).catch(() => null)
+                }
                 succeeded = true
               } catch (error) {
                 lastError = error
@@ -170,7 +186,10 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
           void round()
         }, tickSeconds * 1000)
         void round()
-        return () => clearInterval(timer)
+        return () => {
+          clearInterval(timer)
+          void liveRelay?.stopAll()
+        }
       })
     },
   }

@@ -41,3 +41,12 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 - Hy3（OpenAI chat completions 协议）→ `processor/openai`，`wire_api: chat_completions`
 
 生产配置不动，映射只发生在导入器（`PROVIDER_PROTOCOL` + `inferWireApi`：显式 `wire_api` > base_url 含 `/responses` > 默认 chat_completions）。被丢弃 provider（Google/Deepseek v1/Mechanical）的条目与其连接边一并跳过并输出 warning。
+
+## D6：v1.1 聚合层落账（2026-08-16）
+
+聚合/摘要全部落地（DB 持久化窗口 + 阈值 flush + send_first_immediately + digest 合并 + 媒体可见性 + pairing + biliup 视频投稿 + live relay beta）。两处有意简化，与生产行为有差异：
+
+1. **摘要卡发文本摘要而非 message_pack 渲染卡**（模板渲染工程量大，先文本；不影响信息完整性，仅视觉）。
+2. **tag-storm digest 未实现**（生产参数 2 人/600s 检测/3600s 窗）；开启该配置的目标只走 digest_threshold。
+
+cookie 保活 cron 属运维脚本，不进运行时。
