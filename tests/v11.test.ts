@@ -354,3 +354,14 @@ test('biliup: headline and title truncation are surrogate-pair safe', async () =
     delete process.env.ARGV_OUT
   }
 })
+
+// ---------- regression: env refs resolve to undefined when unset ----------
+
+test('main env resolution: unset env: refs drop the key instead of keeping a literal', async () => {
+  const { resolveEnvStrings } = await import('../src/config/env')
+  expect(resolveEnvStrings('env:KYESTU_DEFINITELY_UNSET_12345')).toBeUndefined()
+  expect(resolveEnvStrings({ a: 'env:KYESTU_DEFINITELY_UNSET_12345', b: 'plain' })).toEqual({ b: 'plain' })
+  process.env.KYESTU_TEST_SET = 'v1'
+  expect(resolveEnvStrings('env:KYESTU_TEST_SET')).toBe('v1')
+  delete process.env.KYESTU_TEST_SET
+})

@@ -112,7 +112,7 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const liveRelay = config.live_relay?.enabled ? new LiveRelay(config.live_relay) : null
       const liveStatusProbe = liveRelay ? (testLiveStatusProbe ?? defaultLiveStatusProbe) : null
 
-      const persistOne = async (raw: CrawlResult): Promise<void> => {
+      const persistOne = fiber.wrap(async (raw: CrawlResult): Promise<void> => {
         const platformName = PLATFORM_NAME[raw.platform] ?? platform
         if (articles.exists(platformName as any, raw.a_id)) return
         let translation: string | null = null
@@ -145,7 +145,7 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
           ...(refs ? { refs } : {}),
         } as any)
         if (id !== null) bus.emit({ platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
-      }
+      })
 
       const round = async (): Promise<void> => {
         if (running) return
