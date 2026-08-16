@@ -39,6 +39,19 @@ bun run start kyestu.config.yaml
 
 > macOS 开发机防护：无 Xvfb 时 headed 浏览器模式自动降级 headless，不会弹前台 Chrome。
 
+## Chrome 供给
+
+浏览器解析链：`PUPPETEER_EXECUTABLE_PATH` 环境变量 → 系统 Chrome（`channel: chrome`）→ 自动下载 Chrome for Testing `142.0.7444.175`（与 idol-bbq 生产镜像同版）到 `cache/browser/chrome`，持久缓存不重复下载。裸机零配置即可跑。
+
+Docker（推荐部署方式，Chrome/ffmpeg/biliup venv 全内置，路径与 idol-bbq 生产布局一致）：
+
+```bash
+docker build -t kyestu .
+# 配置里把 db path / cache_root 指到 /app/data 下即可持久化
+docker run -v $PWD/kyestu.config.yaml:/app/kyestu.config.yaml -v kyestu-data:/app/data kyestu
+```
+
+
 ## 配置一览
 
 ```yaml

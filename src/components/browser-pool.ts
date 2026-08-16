@@ -1,6 +1,7 @@
 import path from 'path'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
-import { mkdirSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
+import { Browser as CfTBrowser, computeExecutablePath, detectBrowserPlatform, install } from '@puppeteer/browsers'
 import {
   applyBrowserProfile,
   resolveBrowserProfile,
@@ -32,6 +33,9 @@ interface BrowserRuntimeSession {
 const CREATE_PAGE_MAX_ATTEMPTS = 2
 const BROWSER_CLOSE_TIMEOUT_MS = 5_000
 const EVICTION_BACKOFF_MS = 30_000
+// Chrome-for-Testing build used when the host has no system Chrome; matches
+// the pinned CHROME_VERSION in idol-bbq's production Dockerfile.
+const CHROME_FALLBACK_BUILD_ID = '142.0.7444.175'
 
 function sanitizeSessionId(value?: string) {
   return (value || 'default').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'default'
@@ -45,6 +49,28 @@ export interface BrowserSessionPoolOptions {
   launcher?: LaunchFn
   /** test seam: skip the post-eviction relaunch backoff */
   skipBackoff?: boolean
+}
+
+/** Downloads the pinned Chrome-for-Testing build into the cache once per process. */
+async function ensureFallbackChrome(cacheRoot: string): Promise<string> {
+  const platform = detectBrowserPlatform()
+  if (!platform) throw new Error('cannot auto-provision Chrome: unsupported platform')
+  const cacheDir = path.join(cacheRoot, 'chrome')
+  mkdirSync(cacheDir, { recursive: true })
+  const executablePath = computeExecutablePath({
+    browser: CfTBrowser.CHROME,
+    buildId: CHROME_FALLBACK_BUILD_ID,
+    cacheDir,
+    platform,
+  })
+  if (existsSync(executablePath)) return executablePath
+  const installed = await install({
+    browser: CfTBrowser.CHROME,
+    buildId: CHROME_FALLBACK_BUILD_ID,
+    cacheDir,
+    platform,
+  })
+  return installed.executablePath
 }
 
 /**
@@ -219,7 +245,7 @@ export class BrowserSessionPool {
     }
   }
 
-  private defaultLauncher: LaunchFn = (browserMode, userDataDir, profile) => {
+  private defaultLauncher: LaunchFn = async (browserMode, userDataDir, profile) => {
     const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
     const lang = process.env.BROWSER_LANG || 'ja-JP'
     const extraArgs = (process.env.BROWSER_EXTRA_ARGS || '')
@@ -242,7 +268,7 @@ export class BrowserSessionPool {
       `--lang=${lang}`,
       ...extraArgs,
     ].filter(Boolean)
-    return puppeteer.launch({
+    const baseOptions = {
       headless: browserMode === 'headless',
       handleSIGINT: false,
       handleSIGHUP: false,
@@ -251,8 +277,23 @@ export class BrowserSessionPool {
       defaultViewport: null,
       ignoreDefaultArgs: ['--enable-automation'],
       userDataDir,
-      ...(executablePath ? { executablePath } : { channel: 'chrome' as const }),
-    })
+    }
+    if (executablePath) {
+      return puppeteer.launch({ ...baseOptions, executablePath })
+    }
+    try {
+      return await puppeteer.launch({ ...baseOptions, channel: 'chrome' as const })
+    } catch (channelError) {
+      // host without system Chrome: auto-provision the pinned build into the
+      // cache (persists across restarts) instead of failing the crawl
+      const fallbackPath = await ensureFallbackChrome(this.browserRoot).catch((downloadError) => {
+        throw new Error(
+          `chrome launch failed (${channelError instanceof Error ? channelError.message : channelError}); ` +
+            `auto-provision also failed: ${downloadError instanceof Error ? downloadError.message : downloadError}`,
+        )
+      })
+      return puppeteer.launch({ ...baseOptions, executablePath: fallbackPath })
+    }
   }
 }
 

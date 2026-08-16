@@ -1,0 +1,8 @@
+node_modules
+cache
+data.db
+*.config.yaml
+!examples/*.yaml
+.git
+docs
+testset

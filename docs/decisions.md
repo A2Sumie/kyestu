@@ -45,3 +45,11 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 ## D6：v1.1 聚合层落账（2026-08-16）
 
 聚合/摘要全部落地（DB 持久化窗口 + 阈值 flush + send_first_immediately + digest 合并 + 媒体可见性 + pairing + biliup 视频投稿 + live relay beta）。**摘要卡用与 idol-bbq 同款的 message_pack 模板渲染**（vendored `DefaultCard`，合成 `message_pack` 文章：groups/items/avatars/range 契约一致），仅渲染不可用时回退文本摘要。tag-storm 检测已实现（`pipeline/tag-storm.ts`：阈值+去重作者+检测窗/聚合窗/过期），**按决定不接进发送链路**。cookie 保活 cron 属运维脚本，不进运行时。
+
+## D7：FC 媒体抑制与博客抓取对齐生产修复（2026-08-16）
+
+与 idol-bbq `6a24a8e` 同步：members-only 文本启发式不作用于 website 平台（公共 blog/news/live-report 合法提及会員限定，只有 `suppress_media_uids` 列出的 FC 区域 + 显式 `members_only` 标记才过滤）；抑制后文字保留、媒体不传，通知带过滤计数。博客详情剥离 `.btnTweet` 分享控件，列表标题选择器收窄为 `.blog-list__title .title`；website 文章外显标题恒用原文首行（博客标题不翻译）。ds4f 的 max_output/ctx 固定 384000/1M，快速响应靠 `reasoning_effort` 调（生产教训：512 上限被 reasoning 吃光导致标题生成 100% 静默回退）。
+
+## D8：Chrome 自动供给（2026-08-16）
+
+浏览器解析链：`PUPPETEER_EXECUTABLE_PATH` → 系统 Chrome（channel）→ 自动下载 Chrome for Testing `142.0.7444.175`（与 idol-bbq Dockerfile 钉版一致）至 `cache/browser/chrome`。新增根级 Dockerfile（oven/bun + 钉版 Chrome deb + ffmpeg + biliup venv，`/app/tools/bin/biliup-python` 等路径与生产布局一致，导入的配置原样可用）。
