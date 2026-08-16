@@ -1,4 +1,5 @@
 import type { Component } from '../core/types'
+import { writeSchedulesFromProcessorResult } from '../pipeline/schedule-webhook'
 
 /**
  * OpenAI-protocol LLM processor (`processor/openai`).
@@ -24,6 +25,7 @@ export interface OpenAiProcessorConfig {
   model_id?: string
   wire_api?: 'responses' | 'chat_completions'
   name?: string
+  action?: string
   prompt?: string
   prompt_assets?: PromptAsset[]
   temperature?: number
@@ -34,6 +36,12 @@ export interface OpenAiProcessorConfig {
   reasoning_effort?: string
   request_timeout_ms?: number
   circuit?: CircuitConfig
+  // extract/plan write-back to the live-player schedule webhook
+  schedule_url?: string
+  schedule_api_key?: string
+  schedule_user_agent?: string
+  schedule_waf_bypass_header?: string
+  min_confidence?: number
   fallback?: {
     api_key?: string
     base_url?: string
@@ -64,8 +72,13 @@ export interface ProviderStatus {
   last_probe: { ok: boolean; latency_ms: number; error: string | null; at: number } | null
 }
 
+export interface ProcessContext {
+  sourceRef?: string
+  minConfidence?: number
+}
+
 export interface ProcessorApi {
-  process: (text: string) => Promise<string>
+  process: (text: string, context?: ProcessContext) => Promise<string>
 }
 
 function resolveApiKey(raw: string | undefined, env: Record<string, string | undefined> = process.env): string {
@@ -157,13 +170,36 @@ export class OpenAiProcessorClient implements ProcessorApi {
     return this.lastProbe
   }
 
-  async process(text: string): Promise<string> {
+  async process(text: string, context?: ProcessContext): Promise<string> {
+    let result: string
     try {
-      return await this.processWithRetry(text)
+      result = await this.processWithRetry(text)
     } catch (error) {
       if (!this.fallbackClient) throw error
-      return await this.fallbackClient.processWithRetry(text)
+      result = await this.fallbackClient.processWithRetry(text)
     }
+    await this.maybeWriteSchedules(result, context)
+    return result
+  }
+
+  /** extract/plan results flow to the live-player schedule webhook; never breaks the pipeline */
+  private async maybeWriteSchedules(result: string, context?: ProcessContext): Promise<void> {
+    const action = String(this.config.action ?? '').toLowerCase()
+    if (!['extract', 'plan'].includes(action)) return
+    if (!this.config.schedule_url && !process.env.SCHEDULE_WEBHOOK_URL) return
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(result)
+    } catch {
+      return
+    }
+    await writeSchedulesFromProcessorResult(parsed, context?.sourceRef ?? this.config.name ?? 'unknown', {
+      scheduleUrl: this.config.schedule_url,
+      scheduleApiKey: this.config.schedule_api_key,
+      scheduleUserAgent: this.config.schedule_user_agent,
+      scheduleWafBypassHeader: this.config.schedule_waf_bypass_header,
+      minConfidence: context?.minConfidence ?? this.config.min_confidence ?? null,
+    }).catch(() => null)
   }
 
   private async processWithRetry(text: string, retries = 2): Promise<string> {

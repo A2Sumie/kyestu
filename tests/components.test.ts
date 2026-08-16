@@ -476,3 +476,51 @@ test('llm probe: records reachability result without touching the circuit', asyn
     },
   )
 })
+
+// ---------- llm extract -> schedule webhook write-back ----------
+
+test('llm extract: result candidates post to schedule webhook; translate action does not', async () => {
+  const webhookPosts: any[] = []
+  const webhook = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      webhookPosts.push(await req.json())
+      return Response.json({ ok: true })
+    },
+  })
+  try {
+    const candidates = JSON.stringify({
+      plans: [
+        { title: 'SR 生放送', executionTime: '2026-08-20T20:00:00+09:00', confidence: 0.9 },
+        { title: '低置信', executionTime: '2026-08-21T20:00:00+09:00', confidence: 0.1 },
+      ],
+    })
+    await withMockLlm(
+      { '/v1/chat/completions': chatOk(candidates) },
+      async (base) => {
+        const extractor = new OpenAiProcessorClient({
+          api_key: 'k',
+          base_url: `${base}/v1/chat/completions`,
+          action: 'extract',
+          schedule_url: `http://127.0.0.1:${webhook.port}/api/schedules`,
+          min_confidence: 0.5,
+        })
+        await extractor.process('出演情報本文', { sourceRef: 'a123' })
+        expect(webhookPosts.length).toBe(1) // low-confidence filtered
+        expect(webhookPosts[0].title).toBe('SR 生放送')
+        expect(webhookPosts[0].externalKey).toMatch(/^a123:event:/)
+
+        const translator = new OpenAiProcessorClient({
+          api_key: 'k',
+          base_url: `${base}/v1/chat/completions`,
+          action: 'translate',
+          schedule_url: `http://127.0.0.1:${webhook.port}/api/schedules`,
+        })
+        await translator.process('翻訳対象')
+        expect(webhookPosts.length).toBe(1) // translate never writes schedules
+      },
+    )
+  } finally {
+    webhook.stop(true)
+  }
+})

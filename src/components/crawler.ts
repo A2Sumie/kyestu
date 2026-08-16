@@ -8,6 +8,7 @@ import { LiveRelay } from '../pipeline/live-relay'
 import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus } from './bus'
 import type { BrowserSessionPool } from './browser-pool'
+import type { ProcessorApi } from './llm-openai'
 
 export interface CrawlResult {
   platform: number
@@ -101,8 +102,13 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const cooldowns = new CooldownMap()
       const platform = kind.replace(/^x-list$/, 'x')
       const processor = (config.__needs as string[] ?? [])
-        .map((id) => ctx.get<NodeHandle>(nodeKey(id))?.api<{ process: (text: string) => Promise<string> }>())
+        .map((id) => ctx.get<NodeHandle>(nodeKey(id))?.api<ProcessorApi>())
         .find((api) => api && typeof api.process === 'function')
+      // post_processors (production: per-article extract/plan runs, e.g. the
+      // showroom/event-time extractor) resolve lazily at crawl time — they are
+      // not route edges, so they cannot be read at apply time
+      const postProcessors: Array<{ processor_id: string; action?: string; min_confidence?: number }> =
+        Array.isArray(config.post_processors) ? config.post_processors : []
 
       const urls = buildUrls(config)
       const schedule = resolveCrawlerSchedule(config)
@@ -147,7 +153,16 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
           u_avatar: raw.u_avatar ?? null,
           ...(refs ? { refs } : {}),
         } as any)
-        if (id !== null) bus.emit('article', { platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
+        if (id !== null) {
+          bus.emit('article', { platform: platformName, id, a_id: raw.a_id, crawlerId: entryId })
+          for (const pp of postProcessors) {
+            const api = ctx.get<NodeHandle>(nodeKey(String(pp.processor_id)))?.api<ProcessorApi>()
+            if (!api || typeof api.process !== 'function') continue
+            await api
+              .process(raw.content ?? '', { sourceRef: raw.a_id, minConfidence: pp.min_confidence })
+              .catch(() => null)
+          }
+        }
       })
 
       // production spider-manager waits a random interval_time between target

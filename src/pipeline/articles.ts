@@ -88,6 +88,17 @@ export class ArticleStore {
     return row ? Number(row.id) : null
   }
 
+  /** cross-platform lookup by canonical url (bilibili archives match on the source url) */
+  findByUrl(url: string): { id: number; platform: Platform; a_id: string } | null {
+    for (const [platform, table] of Object.entries(TABLES)) {
+      const row = this.store.db.query(`SELECT id, a_id FROM ${table} WHERE url = ? LIMIT 1`).get(url) as
+        | { id: number; a_id: string }
+        | null
+      if (row) return { id: Number(row.id), platform: platform as Platform, a_id: row.a_id }
+    }
+    return null
+  }
+
   get(platform: Platform, id: number): (StoredArticle & { id: number }) | null {
     const row = this.store.db.query(`SELECT * FROM ${TABLES[platform]} WHERE id = ?`).get(id) as any
     if (!row) return null

@@ -69,3 +69,7 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 ## D12：processor/rules + cookie 管理 + LLM 提供商管理（2026-08-16）
 
 parity-gap 1/3/4 落地。Mechanical 改名 `processor/rules`（`pipeline/digest-rules.ts` 纯逻辑 + 组件同名 process 接缝），导入器从 drop 改映射。cookie-keepalive 升级 cookie 管理：expandPath（env/~）、jarStatus()（jar 存在/大小/年龄/sources/保活状态），导入器汇总共享 jar 的来源爬虫。LLM 提供商管理并入 processor/openai：熔断（circuit 配置，4xx 不计数，open 直走 fallback）+ unfreeze + probe 探活 + status；hy3-circuit-breaker 与 model-capability 不单设服务。
+
+## D13：schedule-webhook 回写 + bilibili 恢复对账（2026-08-16）
+
+parity-gap 2/6 落地。schedule-webhook 放在 processor/openai 内部（extract/plan action 成功后自动回写 live-player，context 带 sourceRef/minConfidence 覆盖），crawler 新增 post_processors 运行时解析——生产 15 处爬虫引用 22_7-event-time-extract 不经 connections，导入器零改动。bilibili 对账：marker 文件触发的一次性 reconcile，按 biliup source url 匹配文章补种 outbound sent + forward_by；target/bilibili 组件注册、进程级单次调度（setTimeout(0) 等全部 target 注册完）、多账号各自拉各自 archives 不交叉补种。

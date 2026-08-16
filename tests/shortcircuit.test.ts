@@ -338,3 +338,74 @@ test('short-circuit: aggregation threshold flush sends a real summary-card PNG',
     mocks.stop()
   }
 }, 30_000)
+
+test('short-circuit: crawler post_processors run extract and write schedules to the webhook', async () => {
+  const webhookPosts: any[] = []
+  const webhook = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      webhookPosts.push(await req.json())
+      return Response.json({ ok: true })
+    },
+  })
+  const llm = Bun.serve({
+    port: 0,
+    async fetch() {
+      return Response.json({
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: JSON.stringify({
+                plans: [{ title: 'SR 生放送', executionTime: '2026-08-20T20:00:00+09:00', confidence: 0.9 }],
+              }),
+            },
+          },
+        ],
+      })
+    },
+  })
+  try {
+    setCrawlDriverForTest(async () => [article('pp1', 'SHOWROOM 配信 8/20 20:00')])
+    const dir = mkdtempSync(join(tmpdir(), 'kyestu-sc-pp-'))
+    const root = createRoot({ unloadGuardTimeoutMs: 500 })
+    const loader = new Loader(root, defineAll(createRegistry()))
+    await loader.load([
+      { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
+      { id: 'bus', use: 'infra/bus' },
+      { id: 'media-store', use: 'infra/media-store', with: { cache_root: join(dir, 'cache') } },
+      {
+        id: 'event-extract',
+        use: 'processor/openai',
+        with: {
+          api_key: 'k',
+          base_url: `http://127.0.0.1:${llm.port}/v1/chat/completions`,
+          wire_api: 'chat_completions',
+          action: 'extract',
+          schedule_url: `http://127.0.0.1:${webhook.port}/api/schedules`,
+        },
+      },
+      {
+        id: 'site',
+        use: 'crawler/website',
+        with: {
+          origin: 'https://example.com',
+          paths: ['news'],
+          interval_time: { min: 1, max: 2 },
+          post_processors: [{ processor_id: 'event-extract', action: 'extract', min_confidence: 0.6 }],
+        },
+      },
+      { id: 'router', use: 'app/router', with: { routes: [] } },
+    ])
+    const deadline = Date.now() + 10_000
+    while (webhookPosts.length === 0 && Date.now() < deadline) await Bun.sleep(50)
+    expect(webhookPosts.length).toBe(1)
+    expect(webhookPosts[0].title).toBe('SR 生放送')
+    expect(webhookPosts[0].externalKey).toMatch(/^pp1:event:/)
+    await root.dispose()
+  } finally {
+    webhook.stop(true)
+    llm.stop(true)
+    setCrawlDriverForTest(null as any)
+  }
+})

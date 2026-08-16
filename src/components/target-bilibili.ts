@@ -2,6 +2,7 @@ import { readFileSync } from 'fs'
 import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { articleKey, outboundKey, OutboundStore } from '../pipeline/outbound'
+import { registerBilibiliRecoveryTarget } from '../pipeline/bilibili-reconcile'
 import { TargetRuntime } from '../pipeline/target-runtime'
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
 import { uploadVideo } from '../pipeline/biliup'
@@ -129,6 +130,18 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
     const pairingCfg = { enabled: config.video_pairing?.enabled === true, ...config.video_pairing }
     const minInterval = Number(config.min_interval ?? 10_000)
     let lastSentAt = 0
+
+    // DB-recovery reconciliation: when a recovery marker exists at boot, seed
+    // sent state from the account's actual B站 archives so restored articles
+    // are not re-uploaded (idol-bbq bilibili-recovery-reconciliation parity)
+    if (config.video_upload?.enabled && config.reconcile_on_recovery !== false) {
+      registerBilibiliRecoveryTarget(db, {
+        id: String(config.__id ?? 'bilibili'),
+        cookie_file: config.video_upload?.cookie_file ?? config.cookie_file,
+        sessdata: config.sessdata,
+        bili_jct: config.bili_jct,
+      })
+    }
 
     // FC media suppression (idol-bbq parity): only the configured FC areas
     // (photo/movie/radio) drop media; public official-site feeds never match the
