@@ -432,3 +432,41 @@ test('video pairing: re-hold refreshes teaser media and expiry', () => {
   expect(JSON.parse(after.teaser_media)[0].path).toBe('/b.mp4')
   db.close()
 })
+
+test('target runtime: media visibility dedups by content hash across rotating urls + [图已发过] notice', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-vis-'))
+  const { MediaStore } = await import('../src/pipeline/media')
+  const store = new MediaStore(dir)
+  const { createHash } = await import('crypto')
+  const bytes = Buffer.from('same-image-bytes')
+  const contentHash = createHash('sha256').update(bytes).digest('hex')
+  // two different CDN urls (rotated signature), identical bytes
+  const path1 = join(dir, 'u1.jpg')
+  const path2 = join(dir, 'u2.jpg')
+  const { writeFileSync } = await import('fs')
+  writeFileSync(path1, bytes)
+  writeFileSync(path2, bytes)
+  expect(store.contentHashOf(path1)).toBe(contentHash)
+  expect(store.contentHashOf(path2)).toBe(contentHash) // same content -> same dedup key
+
+  const { sent, runtime } = runtimeSetup({
+    media_visibility: { window_seconds: 432000, max_visible: 1, duplicate_behavior: 'text_only' },
+  })
+  const withMedia = (aId: string, path: string) => ({
+    article: { platform: 'instagram', a_id: aId, content: '图', created_at: Math.floor(Date.now() / 1000) },
+    rendered: { text: '图', media: [{ path, type: 'photo' as const, content_hash: store.contentHashOf(path)! }] },
+    route: { crawler: 'c', formatter: 'f', target: 't1' },
+  })
+  await runtime.send(withMedia('ig1', path1) as any)
+  expect(sent).toEqual(['图']) // first send keeps media
+  await runtime.send(withMedia('ig2', path2) as any) // different url, same bytes -> hidden
+  expect(sent[1]).toBe('图\n\n[图已发过]')
+
+  // skip behavior: article dropped entirely when all media hidden, no notice needed
+  const skipSetup = runtimeSetup({
+    media_visibility: { window_seconds: 432000, max_visible: 1, duplicate_behavior: 'skip' },
+  })
+  await skipSetup.runtime.send(withMedia('ig3', path1) as any)
+  await skipSetup.runtime.send(withMedia('ig4', path2) as any)
+  expect(skipSetup.sent.length).toBe(1) // second send skipped wholesale
+})

@@ -46,24 +46,30 @@ export class TargetRuntime {
 
   async send(input: SendInput): Promise<void> {
     const article = input.article as any
-    const text = applyTextPolicies(input.rendered.text, this.config)
+    let text = applyTextPolicies(input.rendered.text, this.config)
     if (!gateByKeywords(`${text}\n${article.content ?? ''}`, this.config)) return
     if (!gateByAge(article.created_at, this.config)) return
 
-    // media visibility: repeated media go text-only or skip entirely
+    // media visibility: repeated media go text-only or skip entirely; keyed by
+    // content hash (CDN urls rotate around the same bytes)
     let rendered = input.rendered
     const visibilityCfg = this.config.media_visibility
     if (visibilityCfg && rendered.media.length) {
       const kept = []
       for (const media of rendered.media) {
-        const verdict = this.visibility.check(this.targetId, media.path, visibilityCfg)
+        const verdict = this.visibility.check(this.targetId, media.content_hash ?? media.path, visibilityCfg)
         if (verdict === 'visible') kept.push(media)
       }
+      const hiddenCount = rendered.media.length - kept.length
       if (kept.length === 0 && rendered.media.length > 0) {
         if (visibilityCfg.duplicate_behavior === 'skip') return
         rendered = { ...rendered, media: [] }
       } else {
         rendered = { ...rendered, media: kept }
+      }
+      // production appends [图已发过] when media is hidden in non-skip mode
+      if (hiddenCount > 0 && visibilityCfg.duplicate_behavior !== 'skip') {
+        text = `${text}\n\n[图已发过]`
       }
     }
 
@@ -118,7 +124,7 @@ export class TargetRuntime {
   }
 
   private recordVisibility(rendered: RenderedPayload): void {
-    for (const media of rendered.media) this.visibility.record(this.targetId, media.path, '')
+    for (const media of rendered.media) this.visibility.record(this.targetId, media.content_hash ?? media.path, '')
   }
 
   /** flush one due window: batch as summary text; under threshold items go natively */

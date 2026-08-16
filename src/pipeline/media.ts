@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { mkdirSync, writeFileSync, existsSync } from 'fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 
 /**
@@ -16,6 +16,7 @@ export interface MediaItem {
 
 export class MediaStore {
   readonly root: string
+  private readonly contentHashes = new Map<string, string>()
 
   constructor(cacheRoot: string) {
     this.root = join(cacheRoot, 'media', 'store')
@@ -45,7 +46,25 @@ export class MediaStore {
     const path = this.pathFor(url)
     mkdirSync(join(path, '..'), { recursive: true })
     writeFileSync(path, buffer)
+    this.contentHashes.set(path, createHash('sha256').update(buffer).digest('hex'))
     return path
+  }
+
+  /**
+   * content hash of a downloaded file (idol-bbq media identity prefers
+   * content_hash over sourceUrl): URL-keyed storage is not a stable dedup key
+   * because IG/TT CDN urls rotate signatures around the same bytes
+   */
+  contentHashOf(path: string): string | null {
+    const memo = this.contentHashes.get(path)
+    if (memo) return memo
+    try {
+      const hash = createHash('sha256').update(readFileSync(path)).digest('hex')
+      this.contentHashes.set(path, hash)
+      return hash
+    } catch {
+      return null
+    }
   }
 }
 

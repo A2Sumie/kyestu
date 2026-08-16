@@ -8,6 +8,7 @@ process.env.FONTS_DIR ||= fileURLToPath(new URL('../../assets/fonts', import.met
 export interface RenderedMedia {
   path: string
   type: 'photo' | 'video'
+  content_hash?: string
 }
 
 export interface RenderedPayload {
@@ -86,7 +87,12 @@ export function makeFormatterComponent(renderType: string): Component<Record<str
             for (const item of article.media) {
               if (!item?.url) continue
               try {
-                out.push({ path: await mediaStore.download(item.url), type: item.type === 'video' ? 'video' : 'photo' })
+                const path = await mediaStore.download(item.url)
+                out.push({
+                  path,
+                  type: item.type === 'video' ? 'video' : 'photo',
+                  content_hash: mediaStore.contentHashOf(path) ?? undefined,
+                })
               } catch {
                 // failed media is dropped from the payload
               }

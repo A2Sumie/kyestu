@@ -73,3 +73,7 @@ parity-gap 1/3/4 落地。Mechanical 改名 `processor/rules`（`pipeline/digest
 ## D13：schedule-webhook 回写 + bilibili 恢复对账（2026-08-16）
 
 parity-gap 2/6 落地。schedule-webhook 放在 processor/openai 内部（extract/plan action 成功后自动回写 live-player，context 带 sourceRef/minConfidence 覆盖），crawler 新增 post_processors 运行时解析——生产 15 处爬虫引用 22_7-event-time-extract 不经 connections，导入器零改动。bilibili 对账：marker 文件触发的一次性 reconcile，按 biliup source url 匹配文章补种 outbound sent + forward_by；target/bilibili 组件注册、进程级单次调度（setTimeout(0) 等全部 target 注册完）、多账号各自拉各自 archives 不交叉补种。
+
+## D14：去重审计与媒体内容哈希（2026-08-16）
+
+全链路去重审计结论：L1 文章级（platform+a_id，跨爬虫/未来 x-link-ingest 用原生 a_id 即安全）、L2 forward_by、L3 outbound claim（30min 回收+5 次上限）、聚合窗 ON CONFLICT、QQ claim→send→mark 均正确。修两个洞：media 可见性去重键从 URL 哈希改内容哈希（idol-bbq 同源：content_hash || sourceUrl || path；IG/TT CDN URL 轮换会让同字节图逃逸 URL 键），MediaStore 下载时算 sha256 字节哈希并 contentHashOf 惰性查询；媒体被隐藏且非 skip 模式时补 [图已发过] 提示（生产行为）。formatter RenderedMedia 带 content_hash。
