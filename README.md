@@ -48,12 +48,41 @@ await root.dispose()               // recovers everything, dependents first
 - **Failure**: an `apply` that throws recovers its partial effects and lands the fiber in FAILED with the error as `outcome`. No automatic retry; call `fiber.reset()` to re-enter.
 - **Ghost-write guard**: `fiber.wrap(fn)` / `fiber.isCurrent(gen)` drop async continuations of dead generations.
 
+## Config & loader
+
+Declarative entries + routes compile into coeffect wiring; reconciliation applies the least-disruptive change per entry. See [docs/config.md](docs/config.md).
+
+```yaml
+components:
+  - id: x-main
+    use: crawler/x
+    with: { cookie_file: cookies/x.txt }
+  - id: group-1
+    use: target/qq
+    with: { group_id: 123456 }
+routes:
+  - from: x-main
+    to: [group-1]
+```
+
+```typescript
+import { createRoot, createRegistry, Loader, loadConfigYaml } from 'kyestu'
+
+const root = createRoot()
+const registry = createRegistry().define('crawler/x', XCrawler).define('target/qq', QQTarget)
+const loader = new Loader(root, registry)
+await loader.load(loadConfigYaml(configText))
+// later: await loader.reconcile(newEntries) — per-entry minimal-disruption diff
+```
+
+Import an idol-bbq config: `bun scripts/import-idol-bbq.ts <config.yaml> [out.yaml]`.
+
 ## Development
 
 ```bash
 bun install
-bun test          # 25 tests: effect engine, coeffects, lifecycle, confluence
+bun test          # 40 tests: effect engine, coeffects, lifecycle, loader, config, importer
 bun run typecheck
 ```
 
-Status: core runtime only. Component loader (declarative config + reconciliation) and application components land in later milestones. See `docs/` for the feasibility report and `testset/` for the behavioral test plan.
+Status: core runtime + config loader + idol-bbq importer. Application components (crawlers, processors, formatters, targets) land in later milestones. See `docs/` for the feasibility report and `testset/` for the behavioral test plan.

@@ -1,0 +1,67 @@
+import { test, expect } from 'bun:test'
+import { convertIdolBbqConfig } from '../src/import/idol-bbq'
+import { compileConfig } from '../src/config/schema'
+
+const sample = {
+  crawlers: [
+    { name: 'X主列表', origin: 'https://x.com/i/lists', paths: ['123'], cfg_crawler: { session_profile: 'x-main' } },
+    { name: 'IG高频', origin: 'https://www.instagram.com', paths: ['user_a'], cfg_crawler: { cookie_file: 'ig.txt' } },
+  ],
+  processors: [
+    { id: 'ja-zh', name: '日中翻译', provider: 'DeepSeekV4Flash', api_key: 'env:DEEPSEEK_API_KEY', cfg_processor: { action: 'translate', model_id: 'deepseek-v4-flash' } },
+  ],
+  formatters: [
+    { id: 'fmt-card', name: '卡片', render_type: 'img-tag', deduplication: true },
+    { id: 'fmt-text', name: '文本', render_type: 'text-card', deduplication: true },
+  ],
+  forward_targets: [
+    { platform: 'qq', id: '群1', cfg_platform: { group_id: 111 } },
+    { platform: 'bilibili', id: 'b站', cfg_platform: { mid: 222 } },
+  ],
+  cfg_crawler: { interval_time: { min: 9000, max: 18000 } },
+  cfg_forward_target: { block_until: '32h' },
+  api: { port: 3000, secret: 'env:API_SECRET' },
+  connections: {
+    'crawler-processor': { X主列表: 'ja-zh', IG高频: 'ja-zh' },
+    'crawler-formatter': { X主列表: ['fmt-card', 'fmt-text'], IG高频: ['fmt-card'] },
+    'formatter-target': { 'fmt-card': ['群1'], 'fmt-text': ['群1', 'b站'] },
+  },
+}
+
+test('converts crawlers/processors/formatters/targets with kind detection and defaults', () => {
+  const config = convertIdolBbqConfig(sample)
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+
+  expect(byId.get('X主列表')!.use).toBe('crawler/x-list')
+  expect(byId.get('X主列表')!.with).toMatchObject({ session_profile: 'x-main' })
+  expect(byId.get('IG高频')!.use).toBe('crawler/instagram')
+  expect(byId.get('ja-zh')!.use).toBe('processor/deepseek-v4-flash')
+  expect(byId.get('ja-zh')!.with).toMatchObject({ action: 'translate', api_key: 'env:DEEPSEEK_API_KEY' })
+  expect(byId.get('fmt-card')!.use).toBe('formatter/img-tag')
+  expect(byId.get('群1')!.use).toBe('target/qq')
+  expect(byId.get('api')!.use).toBe('app/api')
+  expect(config.defaults).toMatchObject({ crawler: { interval_time: { min: 9000 } }, target: { block_until: '32h' } })
+})
+
+test('connections compile to routes with service edges for processors', () => {
+  const config = convertIdolBbqConfig(sample)
+  const routes = config.routes!
+
+  expect(routes).toContainEqual({ from: 'X主列表', via: ['fmt-card'], to: ['群1'] })
+  expect(routes).toContainEqual({ from: 'X主列表', via: ['fmt-text'], to: ['群1', 'b站'] })
+  expect(routes).toContainEqual({ from: 'IG高频', via: ['fmt-card'], to: ['群1'] })
+  expect(routes).toContainEqual({ from: 'ja-zh', to: ['X主列表', 'IG高频'] })
+})
+
+test('imported config compiles to entries with correct needs', () => {
+  const entries = compileConfig(convertIdolBbqConfig(sample))
+  const needs = Object.fromEntries(entries.map((e) => [e.id, e.needs ?? []]))
+  expect(needs['ja-zh']).toEqual([])
+  expect(needs['X主列表']).toEqual(['ja-zh'])
+  expect(needs['IG高频']).toEqual(['ja-zh'])
+  expect(needs['fmt-card']).toEqual(['X主列表', 'IG高频'].sort())
+  expect(needs['fmt-text']).toEqual(['X主列表'])
+  expect(needs['群1']).toEqual(['fmt-card', 'fmt-text'].sort())
+  expect(needs['b站']).toEqual(['fmt-text'])
+  expect(needs['api']).toEqual([])
+})
