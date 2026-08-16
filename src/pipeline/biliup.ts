@@ -77,8 +77,10 @@ function truncateCodePoints(value: string, maxChars: number): string {
 function renderTemplate(template: string, article: UploadInput['article'], timeZone: string): string {
   const displayName = article.username ?? article.u_id
   const accountTitle = displayName ? (displayName.startsWith('22/7') ? displayName : `22/7 ${displayName}`) : ''
-  // translated text first: production titles use the translated caption
-  const caption = (article.translation ?? article.content ?? '').split('\n')[0] ?? ''
+  // website articles carry author-written display titles: keep the original,
+  // never the translation. Social captions use the translated first line.
+  const captionSource = article.platform === 'website' ? article.content : (article.translation ?? article.content)
+  const caption = (captionSource ?? '').split('\n')[0] ?? ''
   const headline = truncateCodePoints(caption.replace(/\s+/g, ' ').trim(), 40)
   // upload_summary drops the display name on purpose: account_title already
   // carries it, repeating it after [TT]/[X] reads as a stutter

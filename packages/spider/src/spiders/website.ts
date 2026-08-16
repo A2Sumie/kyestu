@@ -1198,7 +1198,8 @@ async function extractBlogList(page: Page, url: string) {
                 return {
                     detailUrl,
                     title: clean(
-                        anchor.querySelector('.blog-list__title, .blog-entry-list__title .title')?.textContent,
+                        anchor.querySelector('.blog-list__title .title, .blog-entry-list__title .title')
+                            ?.textContent,
                     ),
                     dateText: clean(anchor.querySelector('.date')?.textContent),
                     summary: clean(anchor.querySelector('.blog-list__txt')?.textContent),
@@ -1562,6 +1563,9 @@ async function extractBlogDetail(page: Page, url: string): Promise<WebsiteDetail
             }
         }
         const body = document.querySelector<HTMLElement>('.blog_detail__main')
+        // The tweet share widget sits inside the body container; drop it so its
+        // label ("ツイート") and widget DOM never leak into text/media extraction.
+        body?.querySelectorAll('.btnTweet').forEach((node) => node.remove())
         const media = Array.from(body?.querySelectorAll('img') || [])
             .map((img) => {
                 const src = absolute(img.getAttribute('src'))

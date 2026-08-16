@@ -236,6 +236,76 @@ test('short-circuit: bilibili photo dynamic uploads to bfs then creates scene 2'
   }
 }, 30_000)
 
+test('short-circuit: bilibili suppresses FC source media with filtered-count notice', async () => {
+  const mocks = startMocks()
+  try {
+    setCrawlDriverForTest(async () => [{ ...article('4001', 'ナナニジPHOTO更新', mocks.mediaUrl), u_id: '22/7:photo' }])
+    const { root } = await boot('bili-fc', mocks, {
+      formatters: [{ id: 'fmt', renderType: 'text' }],
+      targets: [
+        {
+          id: 'bili',
+          use: 'target/bilibili',
+          with: {
+            min_interval: 0,
+            endpoints: mocks.biliEndpoints,
+            sessdata: 's',
+            bili_jct: 'j',
+            suppress_media_uids: ['22/7:photo'],
+            suppress_members_only_media: true,
+          },
+        },
+      ],
+      routes: [{ from: 'x-main', via: ['fmt'], to: ['bili'] }],
+    })
+    await waitFor(() => mocks.biliCalls.some((c) => c.path.includes('create/dyn')), 'bilibili create/dyn')
+    expect(mocks.biliCalls.some((c) => c.path.includes('upload_bfs'))).toBe(false)
+    const create = mocks.biliCalls.find((c) => c.path.includes('create/dyn'))!
+    expect(create.body.dyn_req.scene).toBe(1)
+    expect(create.body.dyn_req.content.contents[0].raw_text).toContain('【媒体未转载：FC photo 内容，已过滤 1 张图片】')
+    expect(create.body.dyn_req.content.contents[0].raw_text).toContain('ナナニジPHOTO更新')
+    await root.dispose()
+  } finally {
+    setCrawlDriverForTest(null)
+    mocks.stop()
+  }
+}, 30_000)
+
+test('short-circuit: bilibili keeps public website feed media despite members-only mention', async () => {
+  const mocks = startMocks()
+  try {
+    setCrawlDriverForTest(async () => [
+      { ...article('4002', '【ナナニジRADIO#222更新！】年額会員限定で定点カメラ配信', mocks.mediaUrl), platform: 5, u_id: '22/7:official-news' },
+    ])
+    const { root } = await boot('bili-news', mocks, {
+      formatters: [{ id: 'fmt', renderType: 'text' }],
+      targets: [
+        {
+          id: 'bili',
+          use: 'target/bilibili',
+          with: {
+            min_interval: 0,
+            endpoints: mocks.biliEndpoints,
+            sessdata: 's',
+            bili_jct: 'j',
+            suppress_media_uids: ['22/7:photo'],
+            suppress_members_only_media: true,
+          },
+        },
+      ],
+      routes: [{ from: 'x-main', via: ['fmt'], to: ['bili'] }],
+    })
+    await waitFor(() => mocks.biliCalls.some((c) => c.path.includes('create/dyn')), 'bilibili create/dyn')
+    const create = mocks.biliCalls.find((c) => c.path.includes('create/dyn'))!
+    expect(create.body.dyn_req.scene).toBe(2)
+    expect(create.body.dyn_req.content.contents[0].raw_text).not.toContain('媒体未转载')
+    await root.dispose()
+  } finally {
+    setCrawlDriverForTest(null)
+    mocks.stop()
+  }
+}, 30_000)
+
 test('short-circuit: aggregation threshold flush sends a real summary-card PNG', async () => {
   const mocks = startMocks()
   try {

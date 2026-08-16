@@ -178,7 +178,12 @@ function readResponsesText(data: any): string {
     .filter((item: any) => item?.type === 'output_text' && typeof item?.text === 'string')
     .map((item: any) => item.text)
     .join('')
-  if (!text) throw new Error('responses API returned no output_text')
+  if (!text) {
+    const status = data?.status ? ` status=${data.status}` : ''
+    const reason = data?.incomplete_details?.reason ? ` reason=${data.incomplete_details.reason}` : ''
+    const outputTypes = Array.isArray(data?.output) ? ` output=[${data.output.map((item: any) => item?.type).join(',')}]` : ''
+    throw new Error(`responses API returned no output_text${status}${reason}${outputTypes}`)
+  }
   return text
 }
 

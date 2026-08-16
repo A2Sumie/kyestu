@@ -6,7 +6,16 @@ import { TargetRuntime } from '../pipeline/target-runtime'
 import type { RenderedPayload } from './formatter'
 
 export interface SendInput {
-  article: { platform: string; a_id: string; id?: number; created_at?: number; content?: string | null }
+  article: {
+    platform: string
+    a_id: string
+    id?: number
+    u_id?: string
+    created_at?: number
+    content?: string | null
+    translation?: string | null
+    extra?: unknown
+  }
   rendered: RenderedPayload
   route: { crawler: string; formatter?: string | null; target: string }
 }

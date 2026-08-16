@@ -6,6 +6,7 @@ import { TargetRuntime } from '../pipeline/target-runtime'
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
 import { uploadVideo } from '../pipeline/biliup'
 import type { SendInput, TargetApi } from './target-qq'
+import type { RenderedPayload } from './formatter'
 
 /** Bilibili target: text/photo dynamics + video upload (biliup) with X-teaser pairing. */
 
@@ -129,6 +130,37 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
     const minInterval = Number(config.min_interval ?? 10_000)
     let lastSentAt = 0
 
+    // FC media suppression (idol-bbq parity): only the configured FC areas
+    // (photo/movie/radio) drop media; public official-site feeds never match the
+    // members-only text heuristic because they legitimately announce FC updates.
+    const SUPPRESS_MEMBERS_ONLY_RE =
+      /会员限定|会員限定|メンバー限定|メン限|メンシプ|members?[-\s]?only|subscribers?[-\s]?only/i
+    const suppressedUids = new Set(
+      (Array.isArray(config.suppress_media_uids) ? config.suppress_media_uids : []).map((v: unknown) =>
+        String(v).trim(),
+      ),
+    )
+    const mediaCountSuffix = (media: RenderedPayload['media']): string => {
+      const photos = media.filter((m) => m.type === 'photo').length
+      const videos = media.length - photos
+      const parts: string[] = []
+      if (photos > 0) parts.push(`${photos} 张图片`)
+      if (videos > 0) parts.push(`${videos} 个视频`)
+      return parts.length ? `，已过滤 ${parts.join('、')}` : ''
+    }
+    const suppressionNotice = (input: SendInput): string | null => {
+      const article = input.article
+      const uId = String(article.u_id ?? '')
+      if (uId && suppressedUids.has(uId)) {
+        return `FC ${uId.split(':').pop() || uId} 内容`
+      }
+      if (!config.suppress_members_only_media) return null
+      if ((article.extra as any)?.data?.members_only === true) return '会员限定内容'
+      if (article.platform === 'website') return null
+      const haystack = [article.content ?? '', article.translation ?? ''].join('\n')
+      return SUPPRESS_MEMBERS_ONLY_RE.test(haystack) ? '会员限定内容' : null
+    }
+
     const rawSend = async (input: SendInput, text: string): Promise<void> => {
       const aKey = articleKey(input.article.platform as any, input.article.a_id)
       const key = outboundKey({
@@ -216,6 +248,14 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
     ctx.effect(() => runtime.startFlushLoop())
     ctx.expose({
       send: async (input: SendInput) => {
+        const notice = suppressionNotice(input)
+        if (notice) {
+          // text-only: media is dropped with an explicit filtered-count notice
+          const text = `【媒体未转载：${notice}${mediaCountSuffix(input.rendered.media)}】\n${input.rendered.text}`
+          await runtime.send({ ...input, rendered: { text, media: [] } })
+          outbound.markForwarded(input.article.platform as any, input.article.a_id, String(input.route.target))
+          return
+        }
         const hasVideo = input.rendered.media.some((m) => m.type === 'video')
         if (hasVideo) {
           await sendVideo(input)
