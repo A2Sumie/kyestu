@@ -1,4 +1,4 @@
-import { readFileSync, watch } from 'fs'
+import { existsSync, readFileSync, watch } from 'fs'
 import { createRoot, Root } from './core/runtime'
 import { createRegistry } from './loader/registry'
 import { Loader, type EntryDef } from './loader/loader'
@@ -7,6 +7,17 @@ import { compileConfig } from './config/schema'
 import { defineAll } from './components'
 
 const configPath = process.argv[2] ?? process.env.KYESTU_CONFIG ?? 'kyestu.config.yaml'
+
+if (!existsSync(configPath)) {
+  console.error(`[kyestu] config not found: ${configPath}
+
+快速开始：
+  1. 从 idol-bbq 导入：  bun run import /path/to/idol-bbq/assets/config.yaml kyestu.config.yaml
+  2. 或复制最小例子：    cp examples/config.minimal.yaml kyestu.config.yaml
+  3. 启动：              bun run start kyestu.config.yaml
+配置指南见 docs/config.md。`)
+  process.exit(1)
+}
 
 function resolveEnvStrings(value: unknown): unknown {
   if (typeof value === 'string' && value.startsWith('env:')) return process.env[value.slice(4)] ?? value

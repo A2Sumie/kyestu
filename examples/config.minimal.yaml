@@ -1,0 +1,52 @@
+# kyestu 最小可用配置：一个 X 账号 → 文本 → 一个 QQ 群
+#
+# 用法：
+#   cp examples/config.minimal.yaml kyestu.config.yaml
+#   按需修改后：export ONEBOT_HTTP_URL=... DEEPSEEK_API_KEY=... && bun run start
+#
+# db / bus / media-store / browser-pool 未声明时自动补本地默认值，
+# api(3000) 与 router 由入口自动添加，无需手写。
+
+components:
+  # OneBot v11 连接（NapCat / Lagrange / go-cqhttp），target/qq 依赖它
+  - id: onebot
+    use: infra/onebot
+    with:
+      http_url: env:ONEBOT_HTTP_URL
+
+  # 抓取源：X 用户时间线
+  - id: x-main
+    use: crawler/x
+    with:
+      websites: ['https://x.com/your_account']
+      cookie_file: cookies/x.txt # Netscape 格式导出
+      interval_seconds: 300
+
+  # 翻译（可整段删除，同时删掉 routes 里最后一条）
+  - id: ja-zh
+    use: processor/openai
+    with:
+      base_url: https://api.deepseek.com/v1
+      api_key: env:DEEPSEEK_API_KEY
+      model_id: deepseek-chat
+      wire_api: chat_completions
+      prompt: '把以下内容翻译成简体中文，只输出译文：'
+
+  # 渲染：纯文本（换 formatter/text-card 即卡片图）
+  - id: fmt-text
+    use: formatter/text
+
+  # 发送目标：QQ 群
+  - id: group-1
+    use: target/qq
+    with:
+      group_id: 123456789
+
+routes:
+  # 数据流：x-main → fmt-text → group-1
+  - from: x-main
+    via: [fmt-text]
+    to: [group-1]
+  # 翻译器挂到 crawler（crawler 入库前调用）
+  - from: ja-zh
+    to: [x-main]

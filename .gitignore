@@ -2,3 +2,13 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# local runtime state & secrets — never commit
+kyestu.config.yaml
+data.db*
+cache/
+cookies/
+*.cookies
+*.cookies.txt
+.env
+
