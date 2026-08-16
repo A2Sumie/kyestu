@@ -3,6 +3,7 @@ import type { KyestuDb } from '../components/db'
 import type { MediaStore } from '../pipeline/media'
 import { Aggregator, type AggregationConfig } from '../pipeline/aggregation'
 import { MediaVisibility, applyTextPolicies, gateByAge, gateByKeywords, type TargetPolicyConfig } from '../pipeline/policies'
+import { VideoPairings } from '../pipeline/pairing'
 import { buildSummaryArticle, renderSummaryCard, type SummaryItem } from '../pipeline/summary-card'
 import type { RenderedPayload } from '../components/formatter'
 import type { SendInput } from '../components/target-qq'
@@ -20,6 +21,7 @@ export interface TargetRuntimeConfig extends TargetPolicyConfig {
 export class TargetRuntime {
   private readonly aggregator: Aggregator
   private readonly visibility: MediaVisibility
+  private readonly pairings: VideoPairings
   private digestBuffer: Array<{ input: SendInput; text: string }> = []
   private firstSentWindows = new Set<number>()
 
@@ -32,6 +34,7 @@ export class TargetRuntime {
   ) {
     this.aggregator = new Aggregator(db)
     this.visibility = new MediaVisibility(db)
+    this.pairings = new VideoPairings(db)
   }
 
   private summaryConfig(): AggregationConfig | null {
@@ -169,7 +172,8 @@ export class TargetRuntime {
     }
     // below threshold at due time: each item goes out natively with its original media
     for (const item of items) {
-      const text = String(item.payload?.text ?? item.article_key)
+      const text = String(item.payload?.text ?? '')
+      if (!text && !(item.payload?.media ?? []).length) continue
       await this.rawSend(
         {
           article: { platform: item.platform, a_id: item.article_key },
@@ -185,6 +189,11 @@ export class TargetRuntime {
   /** periodic flush sweep; returns a dispose */
   startFlushLoop(intervalMs = 30_000): () => void {
     const timer = setInterval(() => {
+      try {
+        this.pairings.sweepExpired()
+      } catch (error) {
+        this.ctx.root.reportTaint(this.ctx.fiber, 'apply', error)
+      }
       for (const window of this.aggregator.due(this.targetId)) {
         this.flush(window.id).catch((error) => this.ctx.root.reportTaint(this.ctx.fiber, 'apply', error))
       }

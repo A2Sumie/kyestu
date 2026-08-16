@@ -44,18 +44,33 @@ const SOURCE_TAGS: Record<string, string> = {
 /** MM.DD_YY, e.g. 08.16_26 (production format) */
 function dateCode(timestampSeconds: number | undefined, timeZone: string): string {
   if (!timestampSeconds) return ''
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-    .formatToParts(new Date(timestampSeconds * 1000))
-    .reduce<Record<string, string>>((acc, part) => {
-      if (part.type !== 'literal') acc[part.type] = part.value
-      return acc
-    }, {})
+  try {
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(new Date(timestampSeconds * 1000))
+      .reduce<Record<string, string>>((acc, part) => {
+        if (part.type !== 'literal') acc[part.type] = part.value
+        return acc
+      }, {})
+  } catch {
+    parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date(timestampSeconds * 1000))
+      .reduce<Record<string, string>>((acc, part) => {
+        if (part.type !== 'literal') acc[part.type] = part.value
+        return acc
+      }, {})
+  }
   return `${parts.month}.${parts.day}_${String(parts.year ?? '').slice(-2)}`
+}
+
+function truncateCodePoints(value: string, maxChars: number): string {
+  const chars = Array.from(value)
+  if (chars.length <= maxChars) return value
+  return `${chars.slice(0, Math.max(0, maxChars - 3)).join('')}...`
 }
 
 function renderTemplate(template: string, article: UploadInput['article'], timeZone: string): string {
@@ -63,7 +78,7 @@ function renderTemplate(template: string, article: UploadInput['article'], timeZ
   const accountTitle = displayName ? (displayName.startsWith('22/7') ? displayName : `22/7 ${displayName}`) : ''
   // translated text first: production titles use the translated caption
   const caption = (article.translation ?? article.content ?? '').split('\n')[0] ?? ''
-  const headline = caption.replace(/\s+/g, ' ').trim().slice(0, 40)
+  const headline = truncateCodePoints(caption.replace(/\s+/g, ' ').trim(), 40)
   // upload_summary drops the display name on purpose: account_title already
   // carries it, repeating it after [TT]/[X] reads as a stutter
   const uploadSummary = [dateCode(article.created_at, timeZone), headline].filter(Boolean).join(' ')
@@ -113,7 +128,7 @@ export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput
     writeFileSync(cookiePath, JSON.stringify(cookieDoc, null, 2))
 
     const timeZone = config.timezone ?? 'Asia/Tokyo'
-    const title = renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone).slice(0, 80)
+    const title = truncateCodePoints(renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone), 80)
     const desc = renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article, timeZone)
 
     const args = [

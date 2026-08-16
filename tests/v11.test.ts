@@ -248,3 +248,109 @@ test('biliup title: production format, member name not repeated after [TT]', asy
     delete process.env.ARGV_OUT
   }
 })
+
+// ---------- regression: aggregation window reuse after close ----------
+
+test('aggregation: closed window is not reused for later items in the same interval', () => {
+  const db = memDb()
+  const agg = new Aggregator(db)
+  const cfg = { enabled: true, interval_seconds: 3600 }
+  const id1 = agg.enqueue('t1', 'r|f|t1', { key: 'twitter:1', rowId: 1, platform: 'twitter', payload: { text: 'a' } }, cfg)
+  agg.close(id1)
+  const id2 = agg.enqueue('t1', 'r|f|t1', { key: 'twitter:2', rowId: 2, platform: 'twitter', payload: { text: 'b' } }, cfg)
+  expect(id2).not.toBe(id1)
+  expect(agg.itemCount(id2)).toBe(1)
+  db.close()
+})
+
+// ---------- regression: aggregation items payload round-trips as an object ----------
+
+test('aggregation: items() returns parsed payloads', () => {
+  const db = memDb()
+  const agg = new Aggregator(db)
+  const cfg = { enabled: true, interval_seconds: 3600 }
+  const id = agg.enqueue('t1', 'r|f|t1', { key: 'twitter:1', rowId: 1, platform: 'twitter', payload: { text: 'hello', username: 'u' } }, cfg)
+  const items = agg.items(id)
+  expect(items[0]!.payload).toEqual({ text: 'hello', username: 'u' })
+  db.close()
+})
+
+// ---------- regression: flush below threshold sends item text natively ----------
+
+test('target runtime: flush below threshold sends the queued item text, not the article key', async () => {
+  const db = memDb()
+  const root = createRoot()
+  const sent: string[] = []
+  const runtime = new TargetRuntime(root.ctx, db, 't1', { summary_card: { enabled: true, threshold: 8 } }, async (_i, text) => {
+    sent.push(text)
+  })
+  const agg = new Aggregator(db)
+  const win = agg.enqueue('t1', 'r|f|t1', { key: 'twitter:1', rowId: 1, platform: 'twitter', payload: { text: 'native1', media: [] } }, { enabled: true, interval_seconds: 1 })
+  await runtime.flush(win)
+  expect(sent).toEqual(['native1'])
+  db.close()
+})
+
+// ---------- regression: expired video pairings are swept by the flush loop ----------
+
+test('target runtime: flush loop sweeps expired video pairings', async () => {
+  const db = memDb()
+  const root = createRoot()
+  const runtime = new TargetRuntime(root.ctx, db, 't1', {}, async () => {})
+  const pairings = new VideoPairings(db)
+  pairings.hold('t1', { a_id: '100', u_id: 'm', url: 'https://x.com/m/100' }, [{ path: '/t.mp4', type: 'video' }], 'tiktok', { window_seconds: -1 })
+  const stop = runtime.startFlushLoop(10)
+  await Bun.sleep(60)
+  stop()
+  const row = db.db.query('SELECT status FROM video_pairings').get() as any
+  expect(row.status).toBe('expired')
+  db.close()
+})
+
+// ---------- regression: biliup timezone robustness + code-point truncation ----------
+
+test('biliup: invalid timezone falls back to JST instead of aborting the upload', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-biliup-tz-'))
+  const helper = join(dir, 'helper.py')
+  writeFileSync(helper, 'import sys\nprint("done bvid=BV1xx411c7mD aid=1")\n')
+  const cookie = join(dir, 'cookies.json')
+  writeFileSync(cookie, JSON.stringify({ cookie_info: { cookies: [{ name: 'SESSDATA', value: 'x' }, { name: 'bili_jct', value: 'y' }] } }))
+  const video = join(dir, 'v.mp4')
+  writeFileSync(video, 'fake')
+  const result = await uploadVideo(
+    { cookie_file: cookie, helper_path: helper, timezone: 'Not/AZone' },
+    { videoPaths: [video], article: { a_id: '9', u_id: 'm', username: 'member', url: 'https://x.com/m/9', content: 'c', platform: 'tiktok', created_at: 1760000000 } },
+  )
+  expect(result.bvid).toBe('BV1xx411c7mD')
+})
+
+test('biliup: headline and title truncation are surrogate-pair safe', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-biliup-uni-'))
+  const helper = join(dir, 'helper.py')
+  writeFileSync(helper, 'import os, sys\nopen(os.environ["ARGV_OUT"], "w").write("\\n".join(sys.argv[1:]))\nprint("done bvid=BV1xx411c7mD aid=1")\n')
+  const cookie = join(dir, 'cookies.json')
+  writeFileSync(cookie, JSON.stringify({ cookie_info: { cookies: [{ name: 'SESSDATA', value: 'x' }, { name: 'bili_jct', value: 'y' }] } }))
+  const video = join(dir, 'v.mp4')
+  writeFileSync(video, 'fake')
+  const argvOut = join(dir, 'argv.txt')
+  process.env.ARGV_OUT = argvOut
+  try {
+    await uploadVideo(
+      { cookie_file: cookie, helper_path: helper },
+      {
+        videoPaths: [video],
+        article: {
+          a_id: '9', u_id: 'm', username: 'member', url: 'https://x.com/m/9',
+          content: '标题😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀', platform: 'tiktok',
+          created_at: Date.parse('2026-08-16T12:00:00+09:00') / 1000,
+        },
+      },
+    )
+    const argv = readFileSync(argvOut, 'utf8').split('\n')
+    const title = argv[argv.indexOf('--title') + 1]!
+    expect(title).not.toMatch(/[\uD800-\uDBFF]$/) // no lone high surrogate
+    expect([...title].length).toBeLessThanOrEqual(80)
+  } finally {
+    delete process.env.ARGV_OUT
+  }
+})

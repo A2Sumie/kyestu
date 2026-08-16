@@ -62,16 +62,37 @@ export class Aggregator {
   ensureWindow(targetId: string, routeKey: string, config: AggregationConfig): number {
     const start = this.windowStart(config)
     const end = start + this.configOf(config).intervalSeconds
-    const idem = `summary:${targetId}:${start}`
     const now = Date.now()
-    this.store.db
-      .query(
-        `INSERT INTO aggregation_windows (idempotency_key, route_key, target_id, mode, window_start, window_end, status, created_at, updated_at)
-         VALUES (?, ?, ?, 'summary_card', ?, ?, 'open', ?, ?)
-         ON CONFLICT(idempotency_key) DO NOTHING`,
-      )
-      .run(idem, routeKey, targetId, start, end, now, now)
-    const window = this.store.db.query('SELECT id FROM aggregation_windows WHERE idempotency_key = ?').get(idem) as { id: number }
+    // a closed (sent/dropped) window must never be reused: reopen under a fresh
+    // key, mirroring idol-bbq's `:reopen:` idempotency suffix, or its queued
+    // items would be stranded forever (due() only scans open windows)
+    let window = this.store.db
+      .query("SELECT id FROM aggregation_windows WHERE idempotency_key = ? AND status = 'open'")
+      .get(`summary:${targetId}:${start}`) as { id: number } | undefined
+    if (!window) {
+      this.store.db
+        .query(
+          `INSERT INTO aggregation_windows (idempotency_key, route_key, target_id, mode, window_start, window_end, status, created_at, updated_at)
+           VALUES (?, ?, ?, 'summary_card', ?, ?, 'open', ?, ?)
+           ON CONFLICT(idempotency_key) DO NOTHING`,
+        )
+        .run(`summary:${targetId}:${start}`, routeKey, targetId, start, end, now, now)
+      window = this.store.db
+        .query("SELECT id FROM aggregation_windows WHERE idempotency_key = ? AND status = 'open'")
+        .get(`summary:${targetId}:${start}`) as { id: number } | undefined
+    }
+    if (!window) {
+      this.store.db
+        .query(
+          `INSERT INTO aggregation_windows (idempotency_key, route_key, target_id, mode, window_start, window_end, status, created_at, updated_at)
+           VALUES (?, ?, ?, 'summary_card', ?, ?, 'open', ?, ?)
+           ON CONFLICT(idempotency_key) DO NOTHING`,
+        )
+        .run(`summary:${targetId}:${start}:reopen:${now}`, routeKey, targetId, start, end, now, now)
+      window = this.store.db
+        .query("SELECT id FROM aggregation_windows WHERE idempotency_key = ? AND status = 'open'")
+        .get(`summary:${targetId}:${start}:reopen:${now}`) as { id: number }
+    }
     return window.id
   }
 
@@ -89,9 +110,19 @@ export class Aggregator {
   }
 
   items(windowId: number): Array<{ article_key: string; article_row_id: number; platform: string; payload: any }> {
-    return this.store.db
+    const rows = this.store.db
       .query('SELECT article_key, article_row_id, platform, payload FROM aggregation_items WHERE window_id = ? ORDER BY id')
       .all(windowId) as any[]
+    for (const row of rows) {
+      if (typeof row.payload === 'string') {
+        try {
+          row.payload = JSON.parse(row.payload)
+        } catch {
+          row.payload = null
+        }
+      }
+    }
+    return rows
   }
 
   itemCount(windowId: number): number {
