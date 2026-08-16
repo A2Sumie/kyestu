@@ -1,0 +1,68 @@
+# Cordis 新 runtime 符合性（无旧锚点，钉新系统保证）
+cases:
+  - id: LC-01
+    title: fiber teardown 资源探针归零
+    layer: lifecycle
+    given: 任一 crawler/target fiber，运行中产生定时器/emitter 监听/page/子进程
+    when: unload 该 fiber
+    then: 探针（setInterval 数、listener 数、page 数、子进程数）全部回到加载前
+  - id: LC-02
+    title: effect 原语 PBT：apply→inverse→观察等价
+    layer: lifecycle
+    given: 原语库每个原子 effect（注册 cron、挂监听、开 page、起子进程、seed cookie、ctx.set）
+    when: 随机序列 apply/inverse
+    then: 状态经 coeffect 观察等价于未执行（PITFALLS 对策①）
+  - id: LC-03
+    title: 单 entry 变更只重载该 fiber
+    layer: lifecycle
+    given: 全量运行系统
+    when: 改 群2 的 digest 配置并 reconcile
+    then: 浏览器池、crawler fiber、其他 target fiber 的代际不变（fiber uid 不变）
+  - id: LC-04
+    title: 逆失败容错：dispose 内单逆抛错→继续其余逆+污点记录+告警
+    layer: lifecycle
+    given: 某 fiber 一个逆函数被注入抛错
+    when: unload
+    then: 其余逆全部执行；污点与告警落日志（论文缺口②的工程对策）
+  - id: LC-05
+    title: 卸载等待上限：guard 等 in-flight send 超时→强卸+标记
+    layer: lifecycle
+    given: target fiber 有一个挂死的 send（>15s）
+    when: unload 该 target
+    then: 超时后强制执行累加器；fiber 标记 dirty；不无限阻塞（论文缺口③）
+  - id: LC-06
+    title: teardown 不取消已持久化摘要队列（与 AG-02 互证）
+    layer: lifecycle
+    given: 未发摘要队列
+    when: target fiber unload
+    then: 队列保留；fiber 重载后继续 flush
+  - id: LC-07
+    title: 指纹/可见槽在 teardown 路径 release（与 OB-09/10 互证）
+    layer: lifecycle
+    given: 发送中途触发 fiber unload
+    when: teardown 完成
+    then: 无残留 claim
+  - id: LC-08
+    title: ghost write 防护：旧代 async 完成后不得写库
+    layer: lifecycle
+    given: fiber unload 时一个在途 LLM 翻译尚未返回
+    when: 它随后完成
+    then: 写库被代际令牌拒绝（PITFALLS B3）
+  - id: LC-09
+    title: 汇合性抽测：任意启停序列后的静默态 == 最终配置冷装配态
+    layer: lifecycle
+    given: 随机 O-Insert/O-Retire/配置变更序列（≥100 步）
+    when: 系统静默
+    then: 与直接从最终配置冷启动的系统做结构化对比一致（论文 Thm 73 的工程版）
+  - id: LC-10
+    title: provider 替换经 broker 吸收，不级联
+    layer: lifecycle
+    given: LLM broker + 依赖它的 formatter/target
+    when: 切换 provider（DeepSeek→Hy3）
+    then: 消费方 fiber 不 reload；仅 broker 内部切换
+  - id: LC-11
+    title: 健康 coeffect 单向性静态检查
+    layer: lifecycle
+    given: 全组件 inject/provide 声明
+    when: CI 图检查
+    then: send 路径不依赖健康写入方；图无环（PITFALLS J4）

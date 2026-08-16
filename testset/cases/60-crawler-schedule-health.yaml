@@ -1,0 +1,86 @@
+# 调度 / 冷却 / 健康分类
+cases:
+  - id: SC-01
+    title: 调度 jitter 稳定哈希：同 crawler 名永远同一偏移
+    layer: unit
+    anchor: crawler-schedule-service.ts:311-320
+    given: 固定 crawler 名与槽位
+    when: 多次计算 nextCrawlerRunAt
+    then: jitter 确定性一致（跨进程也一致）
+  - id: SC-02
+    title: minGap 60s 下限，jitter 不得破 minGap
+    layer: unit
+    anchor: crawler-schedule-service.ts:341
+    given: 相邻两槽位
+    when: 计算运行时刻
+    then: 间隔 ≥60s
+  - id: SC-03
+    title: tick 15s；同 crawler 在途任务防重入
+    layer: lifecycle
+    anchor: crawler-schedule-service.ts:6, spider-manager.ts:1037-1044
+    given: 一次慢抓取超过两个 tick
+    when: tick 再次触发
+    then: 不重复分发同一 crawler
+  - id: SC-04
+    title: soft-start：停机≥15min → 2min warmup、每 tick 限 1 分发；短重启不触发
+    layer: lifecycle
+    anchor: runtime-heartbeat-service.ts:39-57, runtime-controller.ts:338-340
+    given: heartbeat 文件分别模拟 20min / 2min 停机
+    when: 启动
+    then: 前者进入 warmup 限流；后者正常
+  - id: SC-05
+    title: 时区仅支持 Asia/Tokyo/UTC，其他标 timezoneUnsupported
+    layer: unit
+    anchor: crawler-schedule-service.ts:91-100
+    given: cfg 时区 America/New_York
+    when: resolveCrawlerSchedule
+    then: 标记 unsupported 而非静默错算
+  - id: HC-01
+    title: 冷却表全值：auth30m/rate_limit20m/private24h/invalid24h/其他0；IG override：timeout5m/rate10m/auth6h
+    layer: unit
+    anchor: spider-manager.ts:78-90
+    given: 各类错误
+    when: setCooldownForError
+    then: 冷却时长逐值相等（含键格式 platform:host:profile[:igHandle]）
+  - id: HC-02
+    title: 冷却升级 ×2^n（≤×8）cap 6h；遵守 Retry-After
+    layer: unit
+    anchor: spider-manager.ts:2114-2149
+    given: 连续同类失败 5 次 + 一次带 Retry-After 的 429
+    when: 升级计算
+    then: 序列 ×2/×4/×8/×8；Retry-After 被遵守且 ≤6h
+  - id: HC-03
+    title: 不重试类别：auth/rate_limit/parser/private_unfollowed/invalid_handle；IG 连 timeout 也不重试
+    layer: unit
+    anchor: spider-manager.ts:396-416
+    given: 各类错误
+    when: shouldRetryCrawlError
+    then: 返回值逐类符合
+  - id: HC-04
+    title: 私密未关注/无效 handle 熔断 24h；TikTok oembed 校验路径
+    layer: send
+    anchor: spider-manager.ts:85-86, tiktok.ts:429-441（错误码 instagram_private_unfollowed/tiktok_invalid_handle）
+    given: 私密未关注 IG 号 + 不存在 TT 号
+    when: 一次抓取失败
+    then: 分类正确、24h 内不再轮询（fiber 化后表现为 child fiber deactivate）
+  - id: HC-05
+    title: 负缓存族：X replies-404 30m / rest-id 24h / queryid 12h / IG profile 120s / TT secuid 6h
+    layer: unit
+    anchor: x.ts:160-163, instagram.ts:651, tiktok.ts:587
+    given: 各缓存写入
+    when: TTL 内/外访问
+    then: 命中与失效时刻符合
+  - id: HC-06
+    title: IG stories 12s 上限且失败不影响 posts
+    layer: send
+    anchor: instagram.ts:47, 240-250
+    given: stories 抓取挂死
+    when: 12s 后
+    then: stories 放弃，posts 结果正常返回
+  - id: HC-07
+    title: 内容新鲜度 TTL：YT premiere 600s 复查；website mutable feed 24/48/12h；photo archive 72h
+    layer: unit
+    anchor: youtube.ts:761-772, website.ts:17-25
+    given: pending premiere + 各 feed 类型
+    when: 复查调度
+    then: TTL 逐值符合

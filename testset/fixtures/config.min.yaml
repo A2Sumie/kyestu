@@ -1,0 +1,35 @@
+# 最小测试配置（脱敏；语义对齐生产结构，非生产拷贝）
+crawlers:
+  - id: x-main
+    name: X抓取-主
+    platform: twitter
+    websites: [https://x.com/example_member]
+    cfg_crawler:
+      schedule: { slots: ["09:00", "21:00"], min_gap_seconds: 60, timezone: Asia/Tokyo }
+      session_profile: x-main
+  - id: ig-main
+    name: Instagram抓取-主
+    platform: instagram
+    websites: [https://instagram.com/example_member]
+processors:
+  - id: ja-zh
+    name: DeepSeekV4Flash
+    provider: DeepSeek
+    cfg_processor: { api_key: "env:DEEPSEEK_API_KEY", prompt_assets: [] }
+formatters:
+  - id: fmt-card
+    render_type: img-tag
+  - id: fmt-text
+    render_type: text-compact-card
+forward_targets:
+  - id: qq-group-a
+    platform: qq
+    cfg_platform: { group_id: 111111, min_interval: 1000 }
+  - id: bili-main
+    platform: bilibili
+    cfg_platform: { media_check_level: strict, require_media: true }
+connections:
+  crawler-formatter: { x-main: [fmt-card], ig-main: [fmt-card] }
+  formatter-target: { fmt-card: [qq-group-a], fmt-text: [bili-main] }
+  crawler-processor: { x-main: ja-zh, ig-main: ja-zh }
+api: { port: 3000, secret: "env:API_SECRET" }

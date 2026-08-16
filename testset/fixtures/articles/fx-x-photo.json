@@ -1,0 +1,5 @@
+{ "platform": "twitter", "a_id": "1000000000000000001", "u_id": "example_member",
+  "content": "今日の写真です！ #例", "created_at": 1755300000,
+  "url": "https://x.com/example_member/status/1000000000000000001",
+  "media": [ {"type":"photo","url":"https://pbs.example/img1.jpg"}, {"type":"photo","url":"https://pbs.example/img2.jpg"} ],
+  "extra": null, "refs": [] }

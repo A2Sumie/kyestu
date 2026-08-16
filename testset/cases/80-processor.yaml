@@ -1,0 +1,51 @@
+# LLM processor
+cases:
+  - id: PR-01
+    title: Google translator 的持久 ChatSession 语义被显式决策
+    layer: unit
+    anchor: middleware/processor/google.ts:56-67
+    given: 连续两次翻译
+    when: 旧系统（带会话）与新系统（stateless）对比
+    then: 差异被记录；新系统的 stateless 决策写进 release note（PITFALLS H1）
+  - id: PR-02
+    title: pRetry×2 + PROCESSOR_ERROR_FALLBACK 哨兵 + isValidResult 校验
+    layer: unit
+    anchor: middleware/processor/base.ts:11, 121
+    given: LLM 返回空/异常/正常
+    when: process
+    then: 失败返回哨兵或 null，不带异常出逃
+  - id: PR-03
+    title: crawl 期翻译失败=null 且不落库
+    layer: send
+    anchor: spider-manager.ts:2648-2653
+    given: 翻译超时
+    when: crawlArticle
+    then: 文章保存但无翻译字段；无失败翻译行
+  - id: PR-04
+    title: prompt asset：glossary max_items/max_chars 截断；output schema 加载
+    layer: unit
+    anchor: processor-prompt-asset-service.ts:58-150
+    given: 超限 glossary 文件
+    when: buildProcessorPrompt
+    then: 截断规则符合锚点
+  - id: PR-05
+    title: Hy3 熔断：10 连败→freeze 30min→读后半开；key=processor 名
+    layer: lifecycle
+    anchor: hy3-circuit-breaker-service.ts:27-57, 99-114
+    given: 连续 10 次失败
+    when: 第 11 次调用
+    then: 直接 fallback 不请求；30min 后半开试一次；新系统以 provider 健康态实现同等参数
+  - id: PR-06
+    title: env: 前缀密钥解析
+    layer: unit
+    anchor: middleware/processor/base.ts:13-28
+    given: api_key: env:FOO
+    when: 创建 processor
+    then: 从环境变量读取；缺失时报错路径明确
+  - id: PR-07
+    title: processor 实例缓存键稳定（stable stringify）
+    layer: unit
+    anchor: spider-manager.ts:1478, forwarder-manager.ts:5811-5843
+    given: 同逻辑配置不同字段序
+    when: 计算缓存键
+    then: 键一致（PITFALLS A5）

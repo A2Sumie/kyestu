@@ -1,0 +1,8 @@
+{ "platform": "instagram", "a_id": "Db000000000", "u_id": "example_member",
+  "content": "carousel test", "created_at": 1755300200,
+  "url": "https://www.instagram.com/p/Db000000000/",
+  "media": [ {"type":"photo","url":"https://cdn.example/ig/1.jpg"}, {"type":"photo","url":"https://cdn.example/ig/2.jpg"},
+             {"type":"photo","url":"https://cdn.example/ig/3.jpg"}, {"type":"photo","url":"https://cdn.example/ig/4.jpg"},
+             {"type":"photo","url":"https://cdn.example/ig/5.jpg"}, {"type":"photo","url":"https://cdn.example/ig/6.jpg"},
+             {"type":"photo","url":"https://cdn.example/ig/7.jpg"} ],
+  "extra": null, "refs": [] }

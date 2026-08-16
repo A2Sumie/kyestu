@@ -1,0 +1,5 @@
+{ "platform": "tiktok", "a_id": "7400000000000000001", "u_id": "example_member",
+  "content": "踊ってみた", "created_at": 1755300100,
+  "url": "https://www.tiktok.com/@example_member/video/7400000000000000001",
+  "media": [ {"type":"video","url":"https://cdn.example/tt/v1.mp4"} ],
+  "extra": null, "refs": [] }

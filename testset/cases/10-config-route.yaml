@@ -1,0 +1,79 @@
+# 配置编译 / 路由图
+cases:
+  - id: RG-01
+    title: pipelines 为 canonical 形式，parse 期编译为 connections 且 legacy connections 被擦除
+    layer: route
+    anchor: config.ts:53, quick-config-service.ts:722-734
+    given: config 同时含 pipelines 与手写 connections
+    when: configParser 解析
+    then: connections === compile(pipelines)，legacy 键不残留
+  - id: RG-02
+    title: 每 pipeline 仅第一个 processor 参与编译，多余产生诊断警告
+    layer: route
+    anchor: quick-config-service.ts:631-634, 263
+    given: 含两个 processor 的 pipeline
+    when: 编译
+    then: crawler-processor 只取第一个；diagnostics 含对应 warn（新系统若支持多链，此条改写为显式新语义）
+  - id: RG-03
+    title: 空 patch 抛错；strict 下任何 error 诊断抛错
+    layer: unit
+    anchor: quick-config-service.ts:666-670
+    given: 空 patch / 含未知节点的 patch
+    when: compileConnectionsFromQuickPatch
+    then: 抛错且不写 connections
+  - id: RG-04
+    title: partial-ownership 语义：patch 提及的 crawler 拥有其 crawler-processor 边，先逐出再写入
+    layer: unit
+    anchor: quick-config-service.ts:681-702
+    given: 已有 crawler-processor 边 + 只含该 crawler 一条 link 的 patch
+    when: 编译
+    then: 该 crawler 旧边被替换，未提及 crawler 的边不动
+  - id: RG-05
+    title: 连接键双探测 id|name
+    layer: route
+    anchor: route-graph-service.ts:53-65
+    given: 一条以 crawler.name 为键、一条以 crawler.id 为键的连接
+    when: buildRouteGraph
+    then: 两条都解析到同一 crawler
+  - id: RG-06
+    title: 无 formatter 的 crawler：live_relay 进 operational_crawlers，否则 warn
+    layer: route
+    anchor: route-graph-service.ts:103-217
+    given: 无 formatter 的普通 crawler + 无 formatter 但开 live_relay 的 IG crawler
+    when: buildRouteGraph
+    then: 前者 diagnostics 含 crawler_without_formatter；后者进 operational_crawlers 且不 warn
+  - id: RG-07
+    title: 同一 target 经两个 formatter 到达同一 crawler 报 duplicate_target_for_crawler
+    layer: route
+    anchor: route-graph-service.ts:265-272
+    given: crawler→{fmt1,fmt2}→同一 target
+    when: buildRouteGraph
+    then: error 诊断出现
+  - id: RG-08
+    title: 危险兜底：无 graph 目标且完全无 formatter-target map 时回退到全部 targets
+    layer: route
+    anchor: forwarder-manager.ts:2121-2125
+    given: 无 connections 的 config + 2 个 target
+    when: resolveForwardingPaths
+    then: 每个 crawler 路由到所有 targets（钉住该兜底；新系统若取消需显式决策）
+  - id: RG-09
+    title: 22/7 官网 host 硬编码 fallback processor
+    layer: route
+    anchor: spider-manager.ts:668-674
+    given: website-227 crawler 未配 processor
+    when: resolveCrawlerProcessorId
+    then: 返回 22_7-social-ja-zh
+  - id: RG-10
+    title: 配置保存并发安全：in-process 串行链 + 原子 rename + 外部编辑拒写 + 回滚仅当字节未变
+    layer: lifecycle
+    anchor: api-manager.ts:1268-1349
+    given: 两个并发 save + 一次外部手工改文件
+    when: saveConfigAndReload
+    then: 串行生效；外部编辑时拒写；reload 失败且文件仍为本写字节时回滚
+  - id: RG-11
+    title: runtime 创建时 deleteUnknown 删除未知 target 健康行
+    layer: lifecycle
+    anchor: runtime-controller.ts:296, db/index.ts:2160
+    given: target_health 含已不存在 target 的行
+    when: createRuntime
+    then: 未知行被删（新系统改名必须走迁移而非删除——PITFALLS J9）

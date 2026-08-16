@@ -1,0 +1,72 @@
+# 发送管线 / 中间件
+cases:
+  - id: SP-01
+    title: 中间件固定顺序 TimeFilter→KeywordFilter→BlockRule→TextReplace→TextChunk
+    layer: send
+    anchor: middleware/forwarder/base.ts:188-195
+    given: 同时命中时间过滤、关键词、块规则、替换、分片的输入
+    when: MiddlewarePipeline.execute
+    then: 各中间件按序生效（可用探针中间件记录调用顺序）
+  - id: SP-02
+    title: forceSend 管线跳过过滤类中间件
+    layer: send
+    anchor: middleware/forwarder/base.ts:197
+    given: 命中 KeywordFilter 的聚合摘要
+    when: send(..., forceSend=true)
+    then: 不被过滤，正常发出
+  - id: SP-03
+    title: BlockRule 两段提交：发送成功才 commitPending
+    layer: send
+    anchor: middleware/forwarder/pipeline/middlewares.ts:99-103
+    given: 命中块规则的文本 + 一次发送失败
+    when: 发送失败 vs 成功
+    then: 失败时块规则状态不提交；成功才提交
+  - id: SP-04
+    title: 目标级最小间隔：QQ 1000ms / B站 10s
+    layer: send
+    anchor: middleware/forwarder/qq.ts:53, bilibili.ts:154
+    given: 同 target 连续两条发送
+    when: sendPrepared
+    then: 第二条实际发出时间不早于间隔
+  - id: SP-05
+    title: pRetry×2 且 Partial/NonRetryable 不重试
+    layer: send
+    anchor: middleware/forwarder/base.ts:319-330
+    given: realSend 依次抛 transient / PartialForwarderSendError / NonRetryableForwarderSendError
+    when: sendPrepared
+    then: transient 重试到上限；后两者立即上抛
+  - id: SP-06
+    title: NapCat retcode 200（result 120 等）映射 NonRetryable
+    layer: send
+    anchor: middleware/forwarder/qq.ts:121
+    given: OneBot 返回 status=failed retcode=200
+    when: realSend
+    then: 抛 NonRetryableForwarderSendError（不消耗重试）
+  - id: SP-07
+    title: 发送模式门：blocked/capture 模式 assertActualSendAllowed 抛 DryRunError；非 live 跳过媒体批次
+    layer: send
+    anchor: middleware/forwarder/base.ts:566, 727-737
+    given: IDOL_BBQ_OUTBOUND_SEND_MODE=blocked / capture
+    when: send
+    then: 不触达真实发送；capture 写 JSONL/HTTP
+  - id: SP-08
+    title: B站上传纪律：账号级串行队列 + 2s gap + 15s velocity 冷却 + 照片 3×/10s + 动态创建 2× + 4h 结果缓存 + 发后可见性校验
+    layer: send
+    anchor: middleware/forwarder/bilibili.ts:55, 714-983
+    given: 同账号并发两个上传 + 一次 velocity 报错
+    when: tryVideoUpload/sendDynamicContent
+    then: 串行化；velocity 后冷却 15s；各重试次数与缓存命中符合锚点
+  - id: SP-09
+    title: QQ 普通模式图片每 10 张分片
+    layer: send
+    anchor: middleware/forwarder/qq.ts（分片逻辑）+ 审计 P2-11
+    given: 12 图消息
+    when: realSend
+    then: 按 10+2 分片发送（视频分片语义按修复后版本钉）
+  - id: SP-10
+    title: 非 live 模式 dedup 关闭的发散标定（影子对比白名单来源）
+    layer: send
+    anchor: render-service.ts:246, forwarder-manager.ts:2826
+    given: 同一文章在 live 与 capture 两模式各跑一遍
+    when: 对比消息序列
+    then: 差异仅出现在 dedup/媒体批次相关点，列入 SH-02 白名单

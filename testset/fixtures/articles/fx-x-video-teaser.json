@@ -1,0 +1,5 @@
+{ "platform": "twitter", "a_id": "1000000000000000002", "u_id": "example_member",
+  "content": "TikTok 更新→ https://www.tiktok.com/@example_member/video/7400000000000000001",
+  "created_at": 1755299400, "url": "https://x.com/example_member/status/1000000000000000002",
+  "media": [ {"type":"video","url":"https://pbs.example/teaser.mp4"} ],
+  "extra": null, "refs": [], "_note": "video pairing 用：X teaser + TT 主视频 90min 窗" }

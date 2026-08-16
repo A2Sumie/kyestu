@@ -1,0 +1,51 @@
+# 浏览器 / cookie
+cases:
+  - id: BR-01
+    title: sessionKey=profile:mode；userDataDir 按 sessionId:mode 持久
+    layer: lifecycle
+    anchor: browser-session-pool.ts:44-46, 78-83, 185-186
+    given: 同 profile 两次 createPage
+    when: 解析会话
+    then: 复用同一浏览器与 userDataDir
+  - id: BR-02
+    title: cookie seed 每 Browser 一次；浏览器重建后必须重 seed
+    layer: lifecycle
+    anchor: spider-manager.ts:1608-1623（审计 9.3-1 修复语义）
+    given: 浏览器崩溃重建
+    when: 下一次抓取
+    then: 新 Browser 实例重新 seed 配置 cookie 文件
+  - id: BR-03
+    title: newPage 失败→evict+一次重试；disconnected→evict+30s backoff
+    layer: lifecycle
+    anchor: browser-session-pool.ts:86-101, 195-201
+    given: 浏览器连接断开
+    when: createPage
+    then: evict→重建一次；30s 内不重复猛建
+  - id: BR-04
+    title: 关闭纪律：browser.close 5s 超时后 SIGKILL
+    layer: lifecycle
+    anchor: browser-session-pool.ts:232-247
+    given: close 挂死的浏览器
+    when: closeBrowser
+    then: 5s 后 SIGKILL，不无限等待
+  - id: BR-05
+    title: 移动端强制 host（nanabunnonijyuuni-mobile.com）拒绝桌面 profile
+    layer: unit
+    anchor: spider-manager.ts:64-77
+    given: 该 host 配桌面 profile
+    when: 校验/分发
+    then: 被拒绝或强制替换为移动 profile
+  - id: BR-06
+    title: cookie 导出按当前 URL/域过滤，不塞无关域 cookie
+    layer: unit
+    anchor: 审计 9.3-2 修复版（spider-manager/browser-session-pool）
+    given: 跨站访问过的 session
+    when: getBrowserCookieString
+    then: 仅含目标域 cookie
+  - id: BR-07
+    title: page 级监听回收：website 资源拦截器、X capture buffer 不跨任务泄漏
+    layer: lifecycle
+    anchor: website.ts:635-670, x.ts:107-150
+    given: 一轮 website 抓取 + 一轮 X 抓取后
+    when: 任务结束
+    then: 拦截器/capture buffer 被显式 stop/drain（监听器计数归零）

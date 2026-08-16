@@ -1,0 +1,18 @@
+{
+  "name": "kyestu",
+  "version": "0.0.1",
+  "description": "Spatiotemporal composability runtime: revertible effects + reactive coeffects + component lifecycle",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "bun-types": "^1.2.0"
+  }
+}

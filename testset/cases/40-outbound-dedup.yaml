@@ -1,0 +1,86 @@
+# 出站持久化 / 去重（最高危回归区）
+cases:
+  - id: OB-01
+    title: target 隐式 id = md5(配置JSON) 的稳定性
+    layer: unit
+    anchor: forwarder-manager.ts:1026-1035
+    given: 同一逻辑配置的两种字段序写法
+    when: 计算隐式 id
+    then: 旧系统两者 id 相同/不同的事实被钉住；新系统迁移映射表覆盖全部现存 target
+  - id: OB-02
+    title: routeKey/articleOutboundKey/syntheticOutboundKey 字节级格式
+    layer: unit
+    anchor: outbound-message-service.ts:156-228
+    given: 固定 crawler/formatter/target/文章组合
+    when: 生成各键
+    then: 与锚点格式字符串完全一致
+  - id: OB-03
+    title: outbound claim CAS：重复 claim 被抑制分类
+    layer: send
+    anchor: db/index.ts:1496-1590, task-manager.ts:765-780
+    given: 同 key 已完成/在途的 outbound 行
+    when: 再次 claim
+    then: 返回 already_completed/in_progress，不重复发送
+  - id: OB-04
+    title: stale 回收：planned/sending/queued/dry_run 超 30min 可被回收
+    layer: unit
+    anchor: db/index.ts:1507
+    given: 31min 前 sending 状态的行
+    when: claim
+    then: 允许重新 claim
+  - id: OB-05
+    title: failed 重试：60s·2^n ≤3600s，5 次后终败
+    layer: unit
+    anchor: outbound-message-service.ts:30, db/index.ts:1523
+    given: 连续失败的 outbound 行
+    when: 按虚拟时钟推进
+    then: 重试时刻序列 60/120/240/480/960...≤3600；第 5 次后 failed 终态
+  - id: OB-06
+    title: payload_hash drift 只诊断不阻塞
+    layer: unit
+    anchor: db/index.ts:1496+
+    given: 同 key 不同 payload
+    when: claim
+    then: 记录 drift 诊断，流程不被阻断
+  - id: OB-07
+    title: findLatestVisibleCompletion 跨键去重
+    layer: send
+    anchor: forwarder-manager.ts:2731
+    given: 同文章经另一路由已可见完成的记录
+    when: 新路由发送前预检
+    then: 按锚点语义抑制或放行
+  - id: OB-08
+    title: ForwardBy.checkExist 与 translation-passthrough 例外
+    layer: send
+    anchor: forwarder-manager.ts:2160-2174
+    given: 已 ForwardBy 的文章，一次无翻译、一次仅缺翻译
+    when: sendArticles 预过滤
+    then: 无翻译跳过；仅缺翻译时按例外放行
+  - id: OB-09
+    title: content fingerprint claim/release 全路径释放（含异常）
+    layer: send
+    anchor: forwarder-manager.ts:2826-2939
+    given: 发送中途抛错
+    when: 异常路径走完
+    then: 指纹 claim 被 release，后续同内容不被永久抑制
+  - id: OB-10
+    title: 媒体可见槽：claimVisibleSlot/release；全不可见时 skip；重复时 duplicate_behavior（skip|text_only + [图已发过]）
+    layer: send
+    anchor: forwarder-manager.ts:2573-2650, 4011-4228
+    given: target 配 media_visibility 24h/2 次，同媒体第 3 次出现
+    when: applyTargetMediaVisibility
+    then: 第 3 次按 duplicate_behavior 处理；任何非可见结果释放槽位
+  - id: OB-11
+    title: 跨平台媒体三级去重：exact / 视频指纹 / 短视频
+    layer: send
+    anchor: media-cache-service.ts:491-880
+    given: IG 与 TT 的同一视频（不同 URL）
+    when: checkShortVideoCrossPlatformDuplicate 等
+    then: 三级检查按锚点命中
+  - id: OB-12
+    title: >2h 旧文章跳过；errorCounter≥3 标 ForwardBy 放弃
+    layer: send
+    anchor: forwarder-manager.ts:2360, 3104-3127
+    given: 3h 前文章 + 连续 3 次发送失败的文章
+    when: sendArticles
+    then: 前者跳过；后者标记不再尝试

@@ -1,0 +1,72 @@
+# 渲染矩阵（formatter 语义）
+cases:
+  - id: RN-01
+    title: img-tag：非视频帖 = 来源 tag 一行 + 渲染卡插到媒体列表最前
+    layer: render
+    anchor: render-service.ts:382-421
+    given: fx-x-photo.json（X 照片帖）
+    when: render_type=img-tag
+    then: text 仅一行来源 tag；媒体列表首元素为渲染卡
+  - id: RN-02
+    title: img-tag 视频豁免：TikTok/YouTube 或含视频文章回退为完整文字 + 原媒体、无渲染卡
+    layer: render
+    anchor: render-service.ts:416-421
+    given: fx-tt-video.json
+    when: render_type=img-tag
+    then: text=articleToText 全文；无卡；原媒体保留
+  - id: RN-03
+    title: text-card：卡追加到末尾；正文>1000 且非 summary 类时降级为 headline
+    layer: render
+    anchor: render-service.ts:466-481
+    given: fx-long-text.json（>1000 字）与普通短文
+    when: render_type=text-card
+    then: 长文→headline+尾卡；短文→全文+尾卡
+  - id: RN-04
+    title: website 文章走 formatWebsiteCardText（标题/链接/署名）
+    layer: render
+    anchor: render-service.ts:466+（website 分支）, core/render text.ts:665+
+    given: fx-website-fc.json
+    when: render_type=text-compact-card 或 img-tag
+    then: 文本为 formatWebsiteCardText 格式
+  - id: RN-05
+    title: drop-failed 必须先于 hydrate；hydrate 不得跨 URL 错配填充
+    layer: render
+    anchor: render-service.ts:310-318, 775-819（审计 §9.1 的 bug 修复钉住）
+    given: 4 图文章，第 2 张下载失败
+    when: 渲染卡生成
+    then: 失败图先从 article 删除再 hydrate；不出现相邻图重复显示/错位
+  - id: RN-06
+    title: hydrate 重写 raw_html 内联 <img> 为 dataURL
+    layer: render
+    anchor: render-service.ts:821-847
+    given: fx-website-fc.json（raw_html 含内联图）
+    when: hydrateArticleMediaForCard
+    then: raw_html 内 <img> src 变 dataURL
+  - id: RN-07
+    title: 渲染缓存：card cache 16 上限；media read cache 按 mtime 失效；4xx 失败缓存 30min
+    layer: render
+    anchor: render-service.ts:152-188, 890-915
+    given: 重复渲染同文 + 修改媒体文件 mtime + 4xx URL
+    when: 连续 process
+    then: 缓存命中/失效行为与锚点一致
+  - id: RN-08
+    title: 无声视频降级为 photo
+    layer: render
+    anchor: render-service.ts:1281-1293
+    given: 无音轨视频媒体
+    when: handleMedia
+    then: 媒体类型改写为 photo
+  - id: RN-09
+    title: 媒体工具链：use+fallbacks 顺序；TikTok 跳过 yt-dlp 直连；缓存失败跳过重下
+    layer: render
+    anchor: render-service.ts:1473-1551
+    given: 配置 use=[http,gallery_dl] / yt_dlp 与 TikTok 媒体
+    when: handleMedia
+    then: 工具按序回退；TikTok 不走 yt-dlp；30min 内失败 URL 不重试
+  - id: RN-10
+    title: hermetic 渲染模式
+    layer: render
+    anchor: core/render/src/img/index.ts（RENDER_REMOTE_ASSETS）
+    given: RENDER_REMOTE_ASSETS=0
+    when: 渲染含 emoji/生僻字文本
+    then: 无远程字体/emoji 请求；输出确定性 PNG（哈希可比对）

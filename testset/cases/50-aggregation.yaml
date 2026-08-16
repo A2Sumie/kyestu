@@ -1,0 +1,58 @@
+# 摘要 / digest 聚合
+cases:
+  - id: AG-01
+    title: summary 队列 DB 持久化 + 重启恢复
+    layer: lifecycle
+    anchor: forwarder-manager.ts:1057-1179, db/index.ts:1747+
+    given: 含 3 条的 summary_card 聚合窗
+    when: 进程重启
+    then: 队列从 aggregation_windows 完整恢复
+  - id: AG-02
+    title: teardown 不丢不重：drop 时故意保留未发摘要队列
+    layer: lifecycle
+    anchor: forwarder-manager.ts:1464-1468
+    given: 有未发摘要的运行系统
+    when: fiber/系统 teardown 后再启动
+    then: 队列仍在 DB；不丢、不因恢复而重复发送
+  - id: AG-03
+    title: flush 节奏：30s 定时，每 tick 最多 1 条
+    layer: send
+    anchor: forwarder-manager.ts:1007, 4838
+    given: 3 个到期摘要队列
+    when: 虚拟时钟推进 90s
+    then: 每 tick 只 flush 一条
+  - id: AG-04
+    title: 单条摘要的 native 行为
+    layer: send
+    anchor: forwarder-manager.ts:4999
+    given: 窗口内仅 1 条
+    when: flushSummaryCardQueue
+    then: 走 sendSummaryCardSingleNative 路径
+  - id: AG-05
+    title: failureGeneration 键轮换 cap 3
+    layer: send
+    anchor: forwarder-manager.ts:5598-5616
+    given: 摘要发送连续终败
+    when: 每败一次
+    then: outbound key 轮换，最多 3 代后放弃
+  - id: AG-06
+    title: tag digest 默认参数（阈值3/检测5min/聚合20min/≥2作者）与内存态语义
+    layer: send
+    anchor: forwarder-manager.ts:187-190, 7336
+    given: tag 风暴场景（fake clock）
+    when: 触发→聚合→恢复
+    then: 进入/退出 digest 的时刻符合参数；重载后状态失忆的选择被显式钉住（PITFALLS F3）
+  - id: AG-07
+    title: digest 发送使用 synthetic outbound key，可幂等
+    layer: send
+    anchor: outbound-message-service.ts:228, forwarder-manager.ts:7189
+    given: 同一 digest 组发送两次（第二次模拟重试）
+    when: claimAndSendDigest
+    then: 第二次被 claim 抑制
+  - id: AG-08
+    title: hourly/daily 聚合任务：TaskQueue 驱动；LLM 失败发 fallback 消息
+    layer: send
+    anchor: task-manager.ts:472-641, 613-616
+    given: AggregateHourly/AggregateDaily 任务 + 一次 LLM 故障
+    when: poll 执行
+    then: 正常产出摘要；LLM 故障时发送 fallback 文本而非失败静默

@@ -1,0 +1,5 @@
+{ "platform": "youtube", "a_id": "yt000000001", "u_id": "example_channel",
+  "content": "coming soon", "created_at": 1755300300,
+  "url": "https://www.youtube.com/watch?v=yt000000001",
+  "media": [ {"type":"photo","url":"https://i.example/thumb.jpg"} ],
+  "extra": { "data": { "premiere": { "pending": true, "scheduled_start_at": 1755400000 } } }, "refs": [] }

@@ -1,0 +1,38 @@
+# 故障注入 / 级联
+cases:
+  - id: FI-01
+    title: NapCat 不可用→target 自动 deactivate；恢复后自动 activate
+    layer: e2e
+    given: OneBot mock 先 502 后恢复
+    when: 两个周期
+    then: 发送暂停期间不攒 failed 行；恢复后自动继续
+  - id: FI-02
+    title: 群禁言：健康 coeffect 抑制发送
+    layer: e2e
+    given: OneBot 返回 result=120（对应 PKU227 场景）
+    when: 连续发送窗口
+    then: 目标进入冷却/停用，不产生 127 条 failed 积累
+  - id: FI-03
+    title: 浏览器进程崩溃→evict→重建→重 seed→该 crawler 继续，其他 crawler 不受影响
+    layer: lifecycle
+    given: kill 一个 Chrome
+    when: 下一轮抓取
+    then: 仅受影响会话重建；其他 fiber 无感（对照 BR-02/03）
+  - id: FI-04
+    title: LLM provider 熔断→broker 切 fallback→恢复回切
+    layer: e2e
+    given: Hy3 连续失败 10 次
+    when: 后续翻译请求
+    then: broker 内切换；消费方无 reload（对照 PR-05/LC-10）
+  - id: FI-05
+    title: DB 不可用时的优雅降级语义
+    layer: lifecycle
+    given: SQLite 锁/只读
+    when: 抓取与发送
+    then: 明确失败语义（暂停调度+告警），不产生半写状态
+  - id: FI-06
+    title: 配置 reconcile 中途失败：部分 fiber 不受影响
+    layer: lifecycle
+    given: 新配置中某 target 组件构造必抛错
+    when: reconcile
+    then: 仅该 fiber 进 failed 态，其余 fiber 照常（对照旧系统全量回滚 runtime-controller.ts:244-256）

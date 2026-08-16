@@ -1,0 +1,5 @@
+{ "platform": "website", "a_id": "fc-0001", "u_id": "nanabunnonijyuuni-mobile.com",
+  "content": "FC 限定記事", "created_at": 1755300400,
+  "url": "https://nanabunnonijyuuni-mobile.com/fc/news/0001",
+  "media": [ {"type":"photo","url":"https://cdn.example/fc/1.jpg"} ],
+  "extra": { "data": { "raw_html": "<p>本文<img src=\"https://cdn.example/fc/inline1.jpg\"></p>" } }, "refs": [] }

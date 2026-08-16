@@ -1,0 +1,27 @@
+# 影子对比 / 切流验收
+cases:
+  - id: SH-01
+    title: 7 天生产流量重放对比
+    layer: e2e
+    given: 录制的一段生产 DB + 配置（脱敏），fake clock 重放
+    when: 旧系统（live 录制）vs 新系统（capture）
+    then: 消息序列一致：目标、文本、媒体清单哈希、时间窗；发散点必须命中 SH-02 白名单
+  - id: SH-02
+    title: 预期发散白名单
+    layer: e2e
+    given: capture 模式差异
+    when: 对比
+    then: 仅以下允许发散：dedup 关闭导致的重复抑制差异、媒体批次合并差异（SP-10）；其余发散=失败
+  - id: SH-03
+    title: id 迁移映射验证
+    layer: e2e
+    anchor: forwarder-manager.ts:1033
+    given: 生产 DB 副本
+    when: 新系统以迁移映射接入
+    then: outbound/target_health/forward_by 旧键全部命中；无重复发送
+  - id: SH-04
+    title: 逐路由切流验收清单
+    layer: e2e
+    given: 生产并行期
+    when: 每次切一条路由（建议序：IG→群2 → X→群2 → … → B站）
+    then: 每步验证：无重复发送、无丢失、cooldown 状态连续、摘要队列连续；可一键回切
