@@ -18,3 +18,19 @@ API 命名对齐论文 Table 2（ctx.effect / ctx.set / ctx.get / ctx.isolate / 
 ## D3：加固范围 = 稳定性，不做安全向加固（2026-08-16）
 
 开源项目，信任边界内组件视为可信代码。不做鉴权/脱敏/沙箱等安全机制。"加固"仅指：逆失败容错、卸载等待超时、代际防护、生命周期状态机的正确性测试覆盖。
+
+## D4：不移植组件清单（2026-08-16，基于当前生产配置分析）
+
+当前生产配置无死组件（3 processor / 6 formatter / 5 target 全在用；唯一无路由 crawler 是 IG Live 抢抓，live_relay 设计上不需要路由）。死组件全部在**代码注册表**层——即用户记忆中的"早期 LLM/翻译组件"：
+
+不移植（kyestu registry 不定义）：
+
+- `GoogleLLMTranslator`（配置零引用；唯一代码引用是 task-manager AggregateDaily 的兜底 provider 名，而当前配置不产生 AggregateDaily 任务）
+- `DeepSeekLLMTranslator`（legacy v1，被 V4Flash/V4Pro 取代）
+- `OpenaiLikeLLMTranslator`
+- `Hy3FreeTranslator`（8 月实验期用过，已回退 V4Flash；其熔断器语义由 kyestu 的 broker 健康态泛化承接）
+- `DeepSeekV4ProTranslator`（仅作为 Hy3Free 内嵌 fallback 存在，Hy3 不移植则它无对象）
+- `MechanicalProcessor`（注册但零引用）
+- spider：`website-leap`（leap-projects.jp，另一企划）、`messageboard`（需专用开关，未启用）
+
+移植：processor 仅 `deepseek-v4-flash`（含 fallback 链语义）；spider 为 x-list、x-timeline、instagram、tiktok、youtube、website-227；`x-status` 配置虽零引用但被 api-manager 的 x-link 即时动作内部依赖，作为 x 族内部能力保留。
