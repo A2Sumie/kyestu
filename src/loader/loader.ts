@@ -157,7 +157,7 @@ export class Loader {
       inject: [...(componentDef.inject ?? []), ...inject],
       apply: (fiberCtx) => {
         fiberCtx.set(nodeKey(def.id), new NodeHandle(fiberCtx))
-        return componentDef.apply(fiberCtx, def.with ?? {})
+        return componentDef.apply(fiberCtx, { ...def.with, __id: def.id, __needs: def.needs ?? [] })
       },
     }
     return ctx.use(wrapped, def.with ?? {})

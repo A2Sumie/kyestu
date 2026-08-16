@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@kyestu/log": "workspace:*",
+    "@kyestu/render": "workspace:*",
     "@kyestu/spider": "workspace:*",
     "puppeteer-core": "^25.7.0",
     "yaml": "^2.9.0"

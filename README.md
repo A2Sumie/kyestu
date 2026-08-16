@@ -77,12 +77,45 @@ await loader.load(loadConfigYaml(configText))
 
 Import an idol-bbq config: `bun scripts/import-idol-bbq.ts <config.yaml> [out.yaml]`.
 
+## Quick start
+
+```bash
+git clone <kyestu-repo> && cd kyestu
+bun install
+
+# from an idol-bbq deployment:
+bun scripts/import-idol-bbq.ts /path/to/idol-bbq/assets/config.yaml kyestu.config.yaml
+# edit kyestu.config.yaml: cookie paths, onebot http_url, api secret…
+
+export DEEPSEEK_API_KEY=... ONEBOT_HTTP_URL=http://127.0.0.1:3001
+bun src/main.ts kyestu.config.yaml
+```
+
+That's it: infra entries (db/bus/media-store/browser-pool) are auto-provided with local defaults,
+fibers come up in dependency order, the config file is watched and reconciled on change,
+and `/api/status` + `/api/reload` (POST) are on port 3000 (Bearer `KYESTU_API_SECRET` if set).
+
+## Current scope
+
+**v1 (works today)**: crawler spine (x / x-list / instagram / tiktok / youtube / website-227 / leap /
+messageboard) with schedule windows + cooldowns + retry classification; OpenAI-protocol processors
+(responses & chat_completions with fallback); all formatter render types incl. card rendering;
+QQ target (full segment send, rate limit, dedup); Bilibili target (text + photo dynamics);
+declarative config with hot reconcile; fiber lifecycle (partial-failure recovery, unload guard
+timeouts, ghost-write protection).
+
+**v1.1 (explicitly deferred)**: digest/summary-card aggregation, video pairing, media-visibility
+dedup windows, Bilibili video upload (biliup), live capture, cookie keepalive cron. Configs using
+aggregation fields load fine but those behaviors are inert; Bilibili video articles are skipped
+with a taint recorded.
+
 ## Development
 
 ```bash
 bun install
-bun test          # 40 tests: effect engine, coeffects, lifecycle, loader, config, importer
+bun test          # 230 tests: core, loader, config, importer, components, e2e pipeline
 bun run typecheck
 ```
 
-Status: core runtime + config loader + idol-bbq importer. Application components (crawlers, processors, formatters, targets) land in later milestones. See `docs/` for the feasibility report and `testset/` for the behavioral test plan.
+Status: runnable end-to-end (crawl → translate → render → send). See `docs/` for the feasibility
+report, decisions log and config guide; `testset/` holds the parity/conformance test plan.

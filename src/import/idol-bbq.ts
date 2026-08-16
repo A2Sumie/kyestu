@@ -112,6 +112,15 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   if (old.api) components.push({ id: 'api', use: 'app/api', with: old.api })
   if (old.live_capture) components.push({ id: 'live-capture', use: 'app/live-capture', with: old.live_capture })
 
+  // kyestu infra services the app cannot start without; safe to edit after import
+  components.unshift(
+    { id: 'db', use: 'infra/db', with: { path: './data.db' } },
+    { id: 'bus', use: 'infra/bus' },
+    { id: 'media-store', use: 'infra/media-store', with: { cache_root: './cache' } },
+    { id: 'browser-pool', use: 'infra/browser-pool', with: { cache_root: './cache' } },
+    { id: 'onebot', use: 'infra/onebot', with: { http_url: 'env:ONEBOT_HTTP_URL' } },
+  )
+
   // connections -> routes
   const connections = old.connections ?? {}
   const crawlerProcessor: Record<string, string> = connections['crawler-processor'] ?? {}

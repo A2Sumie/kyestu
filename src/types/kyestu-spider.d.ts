@@ -1,4 +1,7 @@
 declare module '@kyestu/spider' {
+  export const spiderRegistry: {
+    findByUrl(url: string): { create(): { init?(): unknown; crawl(url: string, page?: any, traceId?: string, config?: any): Promise<any> } } | undefined
+  }
   export type BrowserMode = 'headless' | 'headed-xvfb' | 'headed'
   export type DeviceProfile = string
   export interface ProfileViewport {

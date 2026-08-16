@@ -3,7 +3,8 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@kyestu/spider": ["src/types/kyestu-spider.d.ts"]
+      "@kyestu/spider": ["src/types/kyestu-spider.d.ts"],
+      "@kyestu/render": ["src/types/kyestu-render.d.ts"]
     }
   }
 }
