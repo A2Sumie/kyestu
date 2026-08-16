@@ -33,7 +33,7 @@ export class VideoPairings {
         `INSERT INTO video_pairings
          (pairing_key, target_id, status, source_article_key, source_platform, source_a_id, source_u_id, source_username, source_created_at, join_platform, teaser_media, expires_at, created_at, updated_at)
          VALUES (?, ?, 'pending', ?, 'twitter', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(pairing_key) DO UPDATE SET updated_at = excluded.updated_at`,
+         ON CONFLICT(pairing_key) DO UPDATE SET teaser_media = excluded.teaser_media, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
       )
       .run(
         key,

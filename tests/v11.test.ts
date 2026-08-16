@@ -424,3 +424,19 @@ test('aggregation: re-enqueue of the same article key in one window is a no-op',
   expect(agg.itemCount(id)).toBe(1)
   db.close()
 })
+
+// ---------- regression: re-holding a teaser refreshes the pairing window ----------
+
+test('video pairing: re-hold refreshes teaser media and expiry', () => {
+  const db = memDb()
+  const pairings = new VideoPairings(db)
+  const article = { a_id: '100', u_id: 'member', url: 'https://x.com/member/status/100' }
+  pairings.hold('bili', article, [{ path: '/a.mp4', type: 'video' }], 'tiktok', { window_seconds: 10 })
+  const before = db.db.query('SELECT expires_at, teaser_media FROM video_pairings').get() as any
+  Bun.sleepSync(20)
+  pairings.hold('bili', article, [{ path: '/b.mp4', type: 'video' }], 'tiktok', { window_seconds: 3600 })
+  const after = db.db.query('SELECT expires_at, teaser_media FROM video_pairings').get() as any
+  expect(after.expires_at).toBeGreaterThan(before.expires_at)
+  expect(JSON.parse(after.teaser_media)[0].path).toBe('/b.mp4')
+  db.close()
+})
