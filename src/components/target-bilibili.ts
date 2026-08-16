@@ -45,9 +45,13 @@ function readCredentials(config: Record<string, any>): BiliCredentials {
 
 export class BilibiliClient {
   private readonly creds: BiliCredentials
+  private readonly endpoints: Record<keyof typeof ENDPOINTS, string>
 
   constructor(config: Record<string, any>) {
     this.creds = readCredentials(config)
+    // config.endpoints overrides exist so smoke tests / staging can point the
+    // client at a mock API instead of api.bilibili.com
+    this.endpoints = { ...ENDPOINTS, ...(config.endpoints ?? {}) }
   }
 
   private cookieHeader(): string {
@@ -83,7 +87,7 @@ export class BilibiliClient {
     form.append('file_up', new Blob([buffer]), path.split(/[\\/]/).pop() || 'image.jpg')
     form.append('category', 'daily')
     form.append('csrf', this.creds.bili_jct)
-    const data = await this.call(ENDPOINTS.uploadPhoto, { method: 'POST', body: form })
+    const data = await this.call(this.endpoints.uploadPhoto, { method: 'POST', body: form })
     return {
       img_src: data.image_url,
       img_width: data.image_width,
@@ -93,7 +97,7 @@ export class BilibiliClient {
   }
 
   async createTextDynamic(text: string): Promise<any> {
-    return this.call(ENDPOINTS.createDynamic, {
+    return this.call(this.endpoints.createDynamic, {
       method: 'POST',
       params: { csrf: this.creds.bili_jct },
       body: JSON.stringify({ dyn_req: { content: { contents: [{ raw_text: text, type: 1, biz_id: '' }] }, scene: 1 } }),
@@ -104,7 +108,7 @@ export class BilibiliClient {
     text: string,
     pics: Array<{ img_src: string; img_width: number; img_height: number; img_size: number }>,
   ): Promise<any> {
-    return this.call(ENDPOINTS.createDynamic, {
+    return this.call(this.endpoints.createDynamic, {
       method: 'POST',
       params: { csrf: this.creds.bili_jct },
       body: JSON.stringify({

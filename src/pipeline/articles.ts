@@ -93,6 +93,7 @@ export class ArticleStore {
     if (!row) return null
     return {
       ...row,
+      platform, // per-platform tables carry no platform column; inject it
       has_media: Boolean(row.has_media),
       media: row.media ? JSON.parse(row.media) : null,
       extra: row.extra ? JSON.parse(row.extra) : null,
