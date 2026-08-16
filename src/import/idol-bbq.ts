@@ -93,6 +93,28 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     components.push({ id: 'live-player', use: 'app/live-player', with: { targets: livePlayerTargets } })
   }
 
+  // in-runtime cookie keepalive replaces the external ops cron
+  // (tools/youtube-cookie-keepalive.sh): one ytdlp job per distinct jar
+  const keepaliveJobs: any[] = []
+  const keepaliveSeen = new Set<string>()
+  for (const crawler of old.crawlers ?? []) {
+    if (crawlerKind(crawler) !== 'youtube') continue
+    const cookieFile: string | undefined = crawler.cfg_crawler?.cookie_file ?? crawler.cookie_file
+    if (!cookieFile || keepaliveSeen.has(cookieFile)) continue
+    keepaliveSeen.add(cookieFile)
+    const firstPath = Array.isArray(crawler.paths) && crawler.paths.length > 0 ? `/${String(crawler.paths[0]).replace(/^\/+/, '')}` : ''
+    keepaliveJobs.push({
+      name: `yt-${keepaliveJobs.length + 1}`,
+      kind: 'ytdlp',
+      cookie_file: cookieFile,
+      url: `${String(crawler.origin ?? 'https://www.youtube.com').replace(/\/+$/, '')}${firstPath}`,
+      interval_seconds: 6 * 3600,
+    })
+  }
+  if (keepaliveJobs.length > 0) {
+    components.push({ id: 'cookie-keepalive', use: 'app/cookie-keepalive', with: { jobs: keepaliveJobs } })
+  }
+
   for (const processor of old.processors ?? []) {
     if (!processor.id) throw new Error('processor without an id')
     const { id, provider, cfg_processor, ...rest } = processor

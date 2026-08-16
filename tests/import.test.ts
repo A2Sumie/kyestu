@@ -121,3 +121,35 @@ test('live_relay targets split into a standalone app/live-player plugin', () => 
   expect(player.with!.targets!.shiina_satsuki227.live_player_url).toBe('https://tv.n2nj.moe') // first claim wins
   expect((config as any).warnings!.some((w: string) => w.includes("live_relay target 'shiina_satsuki227'"))).toBe(true)
 })
+
+test('youtube crawlers with cookie_file generate an in-runtime cookie-keepalive plugin', () => {
+  const config = convertIdolBbqConfig({
+    crawlers: [
+      {
+        name: 'YouTube抓取',
+        origin: 'https://www.youtube.com',
+        paths: ['@sallyamakiofficial', '@227SMEJ'],
+        cfg_crawler: { cookie_file: '/app/assets/cookies/ycookies.txt', session_profile: 'youtube-main' },
+      },
+      {
+        name: 'YouTube抓取 - 20:05',
+        origin: 'https://www.youtube.com',
+        paths: ['@227SMEJ'],
+        cfg_crawler: { cookie_file: '/app/assets/cookies/ycookies.txt' },
+      },
+      { name: 'X主列表', origin: 'https://x.com/i/lists', paths: ['123'], cfg_crawler: {} },
+    ],
+  })
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+  const keepalive = byId.get('cookie-keepalive')!
+  expect(keepalive.use).toBe('app/cookie-keepalive')
+  expect(keepalive.with!.jobs).toEqual([
+    {
+      name: 'yt-1',
+      kind: 'ytdlp',
+      cookie_file: '/app/assets/cookies/ycookies.txt',
+      url: 'https://www.youtube.com/@sallyamakiofficial',
+      interval_seconds: 21600,
+    },
+  ])
+})

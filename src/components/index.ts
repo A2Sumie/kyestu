@@ -12,6 +12,7 @@ import { bilibiliTargetComponent } from './target-bilibili'
 import { routerComponent } from './router'
 import { apiComponent } from './api'
 import { livePlayerComponent } from './live-player'
+import { cookieKeepaliveComponent } from './cookie-keepalive'
 
 export function defineInfra(registry: Registry): Registry {
   return registry
@@ -36,4 +37,5 @@ export function defineAll(registry: Registry): Registry {
     .define('app/router', routerComponent)
     .define('app/api', apiComponent)
     .define('app/live-player', livePlayerComponent)
+    .define('app/cookie-keepalive', cookieKeepaliveComponent)
 }

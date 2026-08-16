@@ -57,3 +57,7 @@ kyestu 的 processor 组件统一为 `processor/openai`，以 `with.wire_api` �
 ## D9：live-player relay 切割为独立插件（2026-08-16）
 
 爬虫的 `live_relay` 只保留纯录制（ffmpeg m3u8 归档 + 生命周期事件）；与 tv.n2nj.moe 的同步切割为独立组件 `app/live-player`（`src/components/live-player.ts`）：订阅 bus 的 `live` 频道，按 handle 匹配 targets 后 POST `/api/relay/sync`（Basic auth + WAF bypass header）。bus 从单 article 频道泛化为 `article`/`live` 双频道。导入器把 crawler `live_relay.targets` 拆出合并为单个 `live-player` 组件，handle 冲突保留先见并 warning；crawler 侧只留 `enabled`/`archive_root`。
+
+## D10：cookie 保活为运行时插件 app/cookie-keepalive（2026-08-16）
+
+外部运维 cron（tools/youtube-cookie-keepalive.sh）收进架构，作为独立组件 `app/cookie-keepalive`（`src/components/cookie-keepalive.ts`）。两种 job：`ytdlp`（临时副本跑 yt-dlp --simulate，成功后原子轮换 jar 并留 .bak-keepalive，语义与生产脚本一致，失败绝不动旧 jar）和 `browser`（用 browser-pool 保温持久化 session，X/IG/TikTok 通用，降低风控触发）。组件暴露 CookieKeepaliveService（runNow/status），按 job 独立 setInterval（默认 6h），单 job 失败互不影响。导入器自动为带 cookie_file 的 YouTube 爬虫生成 ytdlp job（每个 distinct jar 一条，间隔 6h，与生产 cron 一致）；browser job 走手动配置。
