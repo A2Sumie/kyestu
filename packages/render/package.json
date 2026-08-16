@@ -1,0 +1,45 @@
+{
+  "name": "@kyestu/render",
+  "version": "0.3.1",
+  "description": "Render text to image/svg.",
+  "author": "ChocoLZS <chocoielzs@gmail.com>",
+  "homepage": "https://github.com/idol-bbq-utils/idol-bbq-utils#readme",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/idol-bbq-utils/idol-bbq-utils.git"
+  },
+  "scripts": {
+    "test": "FONTS_DIR=../../assets/fonts bun test",
+    "test:playground": "bun test --test-name-pattern='.*playground.*$' --"
+  },
+  "bugs": {
+    "url": "https://github.com/idol-bbq-utils/idol-bbq-utils/issues"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "clsx": "^2.1.1",
+    "dayjs": "^1.11.13",
+    "lodash": "^4.17.21",
+    "react": "^19.1.0",
+    "satori": "^0.12.2",
+    "@kyestu/spider": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/lodash": "^4.17.6",
+    "@types/react": "^19.1.0"
+  }
+}

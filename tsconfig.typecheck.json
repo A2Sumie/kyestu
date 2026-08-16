@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@kyestu/spider": ["src/types/kyestu-spider.d.ts"]
+    }
+  }
+}

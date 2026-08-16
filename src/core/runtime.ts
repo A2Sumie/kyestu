@@ -118,6 +118,16 @@ export class Context {
   fiber: Fiber | null = null
   private iso: Map<Key, Realm> | null = null
   private accumulator: Dispose[] = []
+  private exposedValue: unknown
+
+  /** expose this context's service API; consumers reach it via the node handle's api() */
+  expose(value: unknown): void {
+    this.exposedValue = value
+  }
+
+  get exposed(): unknown {
+    return this.exposedValue
+  }
 
   constructor(root: Root, parent: Context | null) {
     this.root = root

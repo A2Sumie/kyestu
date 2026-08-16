@@ -4,18 +4,24 @@
   "description": "Spatiotemporal composability runtime: revertible effects + reactive coeffects + component lifecycle",
   "type": "module",
   "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "devDependencies": {
     "typescript": "^5.5.0",
     "bun-types": "^1.2.0"
   },
   "dependencies": {
+    "@kyestu/log": "workspace:*",
+    "@kyestu/spider": "workspace:*",
+    "puppeteer-core": "^25.7.0",
     "yaml": "^2.9.0"
   }
 }

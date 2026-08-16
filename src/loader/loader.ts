@@ -32,6 +32,11 @@ export class NodeHandle {
   get<T = unknown>(key: Key): T | undefined {
     return this.ctx.get<T>(key)
   }
+
+  /** the API the component exposed via ctx.expose(), if any */
+  api<T = unknown>(): T | undefined {
+    return this.ctx.exposed as T | undefined
+  }
 }
 
 export function nodeKey(id: string): string {

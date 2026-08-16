@@ -1,0 +1,266 @@
+[
+    {
+        "name": "Noto Sans",
+        "font_file_name": "NotoSans-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans",
+        "font_file_name": "NotoSans-Bold.ttf",
+        "style": "normal",
+        "weight": 700
+    },
+    {
+        "name": "Noto Sans Lao",
+        "font_file_name": "NotoSansLao-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Lao",
+        "font_file_name": "NotoSansLao-Bold.ttf",
+        "style": "normal",
+        "weight": 700
+    },
+    {
+        "name": "Noto Sans Yi",
+        "font_file_name": "NotoSansYi-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Armenian",
+        "font_file_name": "NotoSansArmenian-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Syriac",
+        "font_file_name": "NotoSansSyriac-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Bengali",
+        "font_file_name": "NotoSansBengali-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Arabic",
+        "font_file_name": "NotoSansArabic-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Lisu",
+        "font_file_name": "NotoSansLisu-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Telugu",
+        "font_file_name": "NotoSansTelugu-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Thai",
+        "font_file_name": "NotoSansThai-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Tamil",
+        "font_file_name": "NotoSansTamil-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Malayalam",
+        "font_file_name": "NotoSansMalayalam-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Hebrew",
+        "font_file_name": "NotoSansHebrew-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Devanagari",
+        "font_file_name": "NotoSansDevanagari-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Kannada",
+        "font_file_name": "NotoSansKannada-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Khmer",
+        "font_file_name": "NotoSansKhmer-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Ethiopic",
+        "font_file_name": "NotoSansEthiopic-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Balinese",
+        "font_file_name": "NotoSansBalinese-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Serif Tibetan",
+        "font_file_name": "NotoSerifTibetan-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Egyptian Hieroglyphs",
+        "font_file_name": "NotoSansEgyptianHieroglyphs-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Linear A",
+        "font_file_name": "NotoSansLinearA-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Vai",
+        "font_file_name": "NotoSansVai-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Cherokee",
+        "font_file_name": "NotoSansCherokee-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Mongolian",
+        "font_file_name": "NotoSansMongolian-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Tai Tham",
+        "font_file_name": "NotoSansTaiTham-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Batak",
+        "font_file_name": "NotoSansBatak-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Inscriptional Pahlavi",
+        "font_file_name": "NotoSansInscriptionalPahlavi-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Miao",
+        "font_file_name": "NotoSansMiao-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Bamum",
+        "font_file_name": "NotoSansBamum-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Symbols",
+        "font_file_name": "NotoSansSymbols-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Symbols",
+        "font_file_name": "NotoSansSymbols-Bold.ttf",
+        "style": "normal",
+        "weight": 700
+    },
+    {
+        "name": "Noto Sans Symbols 2",
+        "font_file_name": "NotoSansSymbols2-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Unifont",
+        "font_file_name": "Unifont-Regular.otf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Math",
+        "font_file_name": "NotoSansMath-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Canadian Aboriginal",
+        "font_file_name": "NotoSansCanadianAboriginal-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Gujarati",
+        "font_file_name": "NotoSansGujarati-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Georgian",
+        "font_file_name": "NotoSansGeorgian-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans Oriya",
+        "font_file_name": "NotoSansOriya-Regular.ttf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans CJK JP",
+        "font_file_name": "NotoSansCJKjp-Regular.otf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans CJK JP",
+        "font_file_name": "NotoSansCJKjp-Bold.otf",
+        "style": "normal",
+        "weight": 700
+    },
+    {
+        "name": "Noto Sans CJK SC",
+        "font_file_name": "NotoSansCJKsc-Regular.otf",
+        "style": "normal",
+        "weight": 400
+    },
+    {
+        "name": "Noto Sans CJK SC",
+        "font_file_name": "NotoSansCJKsc-Bold.otf",
+        "style": "normal",
+        "weight": 700
+    }
+]
