@@ -411,3 +411,16 @@ test('cooldown: rate_limit honors embedded retry_after; other classes keep base 
   const map3 = new CooldownMap()
   expect(map3.hit('u3', 'parser')).toBe(0)
 })
+
+// ---------- regression: duplicate enqueue into the same window is idempotent ----------
+
+test('aggregation: re-enqueue of the same article key in one window is a no-op', () => {
+  const db = memDb()
+  const agg = new Aggregator(db)
+  const cfg = { enabled: true, interval_seconds: 3600 }
+  const item = { key: 'twitter:1', rowId: 1, platform: 'twitter', payload: { text: 'a' } }
+  const id = agg.enqueue('t1', 'r|f|t1', item, cfg)
+  agg.enqueue('t1', 'r|f|t1', item, cfg) // UNIQUE(window_id, article_key) would throw before
+  expect(agg.itemCount(id)).toBe(1)
+  db.close()
+})

@@ -52,7 +52,9 @@ export class Aggregator {
       .get(windowId) as { c: number }
     if (Number(countRow.c) >= maxItems) return windowId // over cap: drop deliberately
     this.store.db
-      .query('INSERT INTO aggregation_items (window_id, article_key, article_row_id, platform, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .query(
+        'INSERT INTO aggregation_items (window_id, article_key, article_row_id, platform, payload, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(window_id, article_key) DO NOTHING',
+      )
       .run(windowId, article.key, article.rowId, article.platform, JSON.stringify(article.payload ?? null), Date.now())
     this.store.db.query('UPDATE aggregation_windows SET updated_at = ? WHERE id = ?').run(Date.now(), windowId)
     return windowId
