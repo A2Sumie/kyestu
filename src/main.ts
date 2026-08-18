@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, watch } from 'fs'
 import { createRoot, Root } from './core/runtime'
 import { createRegistry } from './loader/registry'
-import { Loader, type EntryDef } from './loader/loader'
+import { Loader, NodeHandle, nodeKey, type EntryDef } from './loader/loader'
 import { parseConfigYaml } from './config/yaml'
 import { compileConfig } from './config/schema'
 import { defineAll } from './components'
@@ -50,6 +50,13 @@ async function main() {
           entries: loader.current().length,
           fibers: [...root.fibers].map((f) => ({ name: f.name, state: f.state, uid: f.uid })),
         }),
+        // read-only cookie-health view: resolved lazily per request so the
+        // api entry does not need an explicit coeffect edge on keepalive
+        onCookieHealth: () => {
+          const handle = root.ctx.get<NodeHandle>(nodeKey('cookie-keepalive'))
+          const service = handle?.api<{ overview?: () => unknown }>()
+          return service?.overview?.() ?? null
+        },
         onReload: async () => {
           await boot()
           return { ok: true }

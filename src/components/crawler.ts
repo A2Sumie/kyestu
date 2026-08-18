@@ -8,6 +8,7 @@ import { LiveRelay } from '../pipeline/live-relay'
 import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus } from './bus'
 import type { BrowserSessionPool } from './browser-pool'
+import type { SessionHealthBoard } from '../pipeline/session-health'
 import type { ProcessorApi } from './llm-openai'
 
 export interface CrawlResult {
@@ -91,6 +92,14 @@ const DEFAULT_INTERVAL_SECONDS = 5 * 60
 
 export function makeCrawlerComponent(kind: string): Component<Record<string, any>> {
   return {
+    // 'cookie-health' is deliberately NOT a declared coeffect here: session
+    // gating is opt-in per config (BRIEF 2c "no session_profile/cookie_file
+    // → does not participate"), and legacy configs without a cookie-keepalive
+    // entry must keep crawling (compat §3). Declaring it would park every
+    // crawler INACTIVE the moment keepalive is absent — main.ts INFRA_
+    // DEFAULTS does not include keepalive. The board is read per round
+    // instead (ctx.get), which also means a keepalive reload (new board
+    // generation) is picked up without reloading this fiber.
     inject: ['db', 'bus'],
     apply: (ctx, config) => {
       const db = ctx.get<KyestuDb>('db')!
@@ -101,6 +110,13 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const entryId = String(config.__id)
       const cooldowns = new CooldownMap()
       const platform = kind.replace(/^x-list$/, 'x')
+      // session-health feedback key (2c): the crawler participates in the
+      // keepalive loop only when its config names a session or a jar; the
+      // board is resolved per round so absence (no keepalive entry) and
+      // reload (new board generation) are both handled without lifecycle
+      // coupling.
+      const sessionKey = String(config.session_profile ?? config.cookie_file ?? '')
+      const boardOf = () => (sessionKey ? ctx.get<SessionHealthBoard>('cookie-health') ?? null : null)
       const processor = (config.__needs as string[] ?? [])
         .map((id) => ctx.get<NodeHandle>(nodeKey(id))?.api<ProcessorApi>())
         .find((api) => api && typeof api.process === 'function')
@@ -177,9 +193,23 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const round = async (): Promise<void> => {
         if (running) return
         running = true
+        const board = boardOf()
         try {
+          // session-health gate (§6.1 withholding): a quarantined session is
+          // not touched at all — one log line per round, no requests
+          let guardLogged = false
           for (const [index, url] of urls.entries()) {
             if (index > 0 && waitTimeMs > 0) await fiber.wrap(() => Bun.sleep(waitTimeMs))()
+            if (board && sessionKey) {
+              const verdict = board.guard(sessionKey)
+              if (verdict.blocked) {
+                if (!guardLogged) {
+                  console.warn(`[crawler:${entryId}] session '${sessionKey}' ${verdict.reason} — skipping this round`)
+                  guardLogged = true
+                }
+                continue
+              }
+            }
             const cooled = cooldowns.check(url)
             if (cooled.cooled) continue
             let lastError: unknown
@@ -198,10 +228,17 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
                 if (!shouldRetry(classifyCrawlError(error), platform)) break
               }
             }
-            if (succeeded) cooldowns.succeed(url)
-            else {
+            if (succeeded) {
+              cooldowns.succeed(url)
+              board?.record(sessionKey, true)
+            } else {
               cooldowns.recordMessage(url, lastError instanceof Error ? lastError.message : String(lastError))
               cooldowns.hit(url, classifyCrawlError(lastError), platform)
+              // auth-class failure = the session itself is suspect: feed the
+              // board so keepalive escalates suspect -> broken -> quarantined
+              if (board && sessionKey && classifyCrawlError(lastError) === 'auth') {
+                board.record(sessionKey, false, lastError)
+              }
             }
           }
         } finally {

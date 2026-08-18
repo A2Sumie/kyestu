@@ -17,9 +17,19 @@ export interface LiveEvent {
   m3u8?: string
 }
 
+/**
+ * Session health transitions (cookie-keepalive publishes; future QQ alerting
+ * consumes). fresh->broken must be observable out-of-band: the 8-17 lesson
+ * was cookie 409s sitting unseen in a state field for two days.
+ */
+export type SessionBusEvent =
+  | { kind: 'transition'; key: string; from: string; to: string; detail?: string }
+  | { kind: 'expiring'; key: string; minRemainingSeconds: number | null; cookies: number }
+
 interface BusEventMap {
   article: ArticleEvent
   live: LiveEvent
+  session: SessionBusEvent
 }
 
 /** process-wide event bus: crawlers publish, router / live-player subscribe */

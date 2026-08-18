@@ -3,6 +3,8 @@ import type { Component } from '../core/types'
 export interface ApiControl {
   onStatus?: () => unknown
   onReload?: () => Promise<unknown>
+  /** read-only session-health view (cookie-keepalive overview), optional */
+  onCookieHealth?: () => unknown
 }
 
 export const apiComponent: Component<{ port?: number; secret?: string } & ApiControl> = {
@@ -19,6 +21,11 @@ export const apiComponent: Component<{ port?: number; secret?: string } & ApiCon
         }
         if (url.pathname === '/api/status' && req.method === 'GET') {
           return Response.json(config.onStatus?.() ?? { ok: true })
+        }
+        if (url.pathname === '/api/cookie-health' && req.method === 'GET') {
+          return Response.json(config.onCookieHealth?.() ?? { error: 'cookie-health not available' }, {
+            status: config.onCookieHealth ? 200 : 404,
+          })
         }
         if (url.pathname === '/api/reload' && req.method === 'POST') {
           try {
