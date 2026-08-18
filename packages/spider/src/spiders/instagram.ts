@@ -9,6 +9,7 @@ import type {
     CrawlEngine,
 } from '../types'
 import { BaseSpider, waitForResponse } from './base'
+import { isDomainBlocked, recordDomainFailure, recordDomainSuccess } from '../utils/domain-breaker'
 import { Page } from 'puppeteer-core'
 
 import { JSONPath } from 'jsonpath-plus'
@@ -92,6 +93,23 @@ class InstagramPrivateUnfollowedError extends Error {
             `Instagram profile ${handle} is private and the current viewer is not following (instagram_private_unfollowed)`,
         )
         this.name = 'InstagramPrivateUnfollowedError'
+    }
+}
+
+/**
+ * Thrown when a profile navigation clearly shows logged-out behavior: the page
+ * loaded but the logged-in graphql traffic never fires. Surfaced as an `auth`
+ * class error so the spider-manager applies the long IG auth cooldown instead
+ * of letting every handle burn the full posts-gate timeout.
+ */
+class InstagramLoggedOutError extends Error {
+    readonly code = 'instagram_logged_out'
+
+    constructor(handle: string) {
+        super(
+            `Instagram session appears logged out for ${handle}: profile page loaded but no graphql traffic fired (instagram_logged_out)`,
+        )
+        this.name = 'InstagramLoggedOutError'
     }
 }
 
@@ -266,6 +284,9 @@ namespace InsApiJsonParser {
     const PROFILE_POSTS_KEY = 'PolarisProfilePostsQuery'
     const PROFILE_USER_KEY = 'PolarisProfilePageContentQuery'
     const PROFILE_HIGHLIGHTS_KEY = 'PolarisProfileStoryHighlightsTrayContentQuery'
+
+    // Origin key for the shared in-page-fetch circuit breaker.
+    const INSTAGRAM_WEB_ORIGIN = 'www.instagram.com'
 
     export function graphQLFriendlyNameFromRequest(
         url: string,
@@ -729,6 +750,63 @@ namespace InsApiJsonParser {
         }
     }
 
+    // Grace window for the logged-out heuristic below. Logged-in profile loads
+    // emit graphql traffic within a couple of seconds; the wide margin keeps the
+    // detector conservative (a slow-but-healthy session is never misjudged).
+    const LOGGED_OUT_PROBE_MS = 8000
+
+    /**
+     * Returns an InstagramLoggedOutError when the page looks logged out, or null
+     * when the crawl should continue normally. Fires only when BOTH hold after
+     * the grace window: (a) not a single /graphql/query or /api/graphql response
+     * was observed, and (b) the page exposes no login form/link. Any graphql
+     * activity cancels the probe, so normal logged-in crawls are unaffected.
+     */
+    async function detectLoggedOutEarlyExit(
+        page: Page,
+        postsSettled: Promise<unknown>,
+        handle: string,
+    ): Promise<InstagramLoggedOutError | null> {
+        let graphqlResponses = 0
+        const responseListener = (response: any) => {
+            const requestUrl = String(response.url?.() || '')
+            if (requestUrl.includes('/graphql/query') || requestUrl.includes('/api/graphql')) {
+                graphqlResponses += 1
+            }
+        }
+        page.on('response', responseListener)
+        try {
+            const probe = new Promise<boolean>((resolve) => {
+                setTimeout(() => resolve(graphqlResponses === 0), LOGGED_OUT_PROBE_MS)
+            })
+            const postsHappened = Promise.resolve(postsSettled).then(
+                () => true,
+                () => true,
+            )
+            const outcome = await Promise.race([probe, postsHappened.then(() => 'posts')])
+            if (outcome !== true) {
+                // Posts gate already settled (success or failure) — nothing to
+                // fast-fail; let the normal flow handle it.
+                return null
+            }
+            if (graphqlResponses > 0) {
+                return null
+            }
+            // Second confirmation: an actual login surface on the page. Absence
+            // of graphql alone is not enough (defensive against slow networks).
+            const loginElement = await Promise.race([
+                (page as any).$?.('form[id="loginForm"], a[href*="/accounts/login"]') ?? null,
+                sleep(1000).then(() => null),
+            ]).catch(() => null)
+            if (loginElement) {
+                return new InstagramLoggedOutError(handle || 'unknown')
+            }
+            return null
+        } finally {
+            page.off('response', responseListener)
+        }
+    }
+
     async function fetchIgProfilePayloads(
         page: Page,
         url: string,
@@ -807,6 +885,9 @@ namespace InsApiJsonParser {
         // posts wait so that blocked profiles fail immediately instead of burning
         // the full 60s posts timeout.
         const targetHandle = parseHandleFromUrl(url)
+        // Kicked off before the profile race below so its 8s window overlaps the
+        // profile race instead of stacking on top of it.
+        const loggedOutProbe = detectLoggedOutEarlyExit(page, postsWait.promise, parseHandleFromUrl(url))
         if (profileWait) {
             const profilePromise = profileWait.promise
                 .then((result: any) => {
@@ -835,6 +916,22 @@ namespace InsApiJsonParser {
                 profileWait.cleanup()
                 throw new InstagramPrivateUnfollowedError(profileUser?.username || targetHandle || 'unknown')
             }
+        }
+
+        // Logged-out fast fail: when logged out, the profile page loads fine but
+        // the logged-in graphql traffic never fires, so every handle burns the
+        // full posts-gate timeout and is misclassified as `timeout`. After a
+        // short grace window with ZERO graphql responses AND a login surface on
+        // the page, treat the session as logged out and raise an auth-class
+        // error. Conservative by design: any graphql activity (even unrelated
+        // queries) cancels the probe, so normal logged-in crawls are unaffected —
+        // missing a real logout only costs the old 60s timeout.
+        const loggedOut = await loggedOutProbe
+        if (loggedOut) {
+            postsWait.cleanup()
+            highlightsWait?.cleanup()
+            profileWait?.cleanup()
+            throw loggedOut
         }
 
         const postsData = await postsWait.promise
@@ -887,6 +984,12 @@ namespace InsApiJsonParser {
             AVATAR_CACHE.set(handle, { url: fromCapturedPayload, expiresAt: Date.now() + AVATAR_CACHE_TTL_MS })
             return fromCapturedPayload
         }
+        // Global per-origin breaker: when the session is dead, every handle's
+        // probe fails; trip once and stop hammering for the block window.
+        if (isDomainBlocked(INSTAGRAM_WEB_ORIGIN)) {
+            AVATAR_CACHE.set(handle, { url: null, expiresAt: Date.now() + AVATAR_CACHE_MISS_TTL_MS })
+            return null
+        }
         let url: unknown = null
         try {
             url = await (page as any).evaluate?.(
@@ -911,6 +1014,11 @@ namespace InsApiJsonParser {
             url = null
         }
         const normalized = normalizeInstagramUrl(url)
+        if (normalized) {
+            recordDomainSuccess(INSTAGRAM_WEB_ORIGIN)
+        } else {
+            recordDomainFailure(INSTAGRAM_WEB_ORIGIN)
+        }
         AVATAR_CACHE.set(handle, {
             url: normalized,
             expiresAt: Date.now() + (normalized ? AVATAR_CACHE_TTL_MS : AVATAR_CACHE_MISS_TTL_MS),
@@ -1171,6 +1279,6 @@ namespace InsApiJsonParser {
     }
 }
 
-export { ArticleTypeEnum, InstagramArticleTaskType, InstagramPrivateUnfollowedError, InsApiJsonParser }
+export { ArticleTypeEnum, InstagramArticleTaskType, InstagramPrivateUnfollowedError, InstagramLoggedOutError, InsApiJsonParser }
 export type { InstagramProfileStatus }
 export { InstagramSpider }

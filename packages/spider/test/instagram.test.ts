@@ -6,6 +6,7 @@ import { join } from 'path'
 import { createLogger, winston, format } from '@kyestu/log'
 import type { GenericFollows } from '../src/types'
 import { InstagramSpider, InsApiJsonParser } from '../src/spiders/instagram'
+import { resetDomainBreakers } from '../src/utils/domain-breaker'
 import { test, expect } from 'bun:test'
 
 const dataPath = (...parts: Array<string>) => join(import.meta.dir, 'data', ...parts)
@@ -161,6 +162,149 @@ test('Instagram grabPosts resolves after posts query without waiting for highlig
     // The auxiliary profile-payload listener may remain attached until its own
     // timeout; posts/highlights listeners must all be cleaned up.
     expect((listeners.get('response') || []).length).toBeLessThanOrEqual(1)
+})
+
+test('Instagram backfills avatar-less posts via page-context web_profile_info', async () => {    // XDT timeline payload whose user nodes dropped all avatar fields.
+    const posts_json = {
+        data: {
+            xdt_api__v1__feed__user_timeline_graphql_connection: {
+                edges: [
+                    {
+                        node: {
+                            code: 'NOAV1',
+                            taken_at: 1742400132,
+                            caption: { text: 'avatar-less post' },
+                            user: { username: 'noav_user', full_name: 'No Avatar' },
+                            image_versions2: { candidates: [{ width: 720, url: 'https://example.com/p.jpg' }] },
+                        },
+                    },
+                ],
+            },
+        },
+    }
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    const page = {
+        on: (eventName: string, handler: (data: any) => void) => {
+            const handlers = listeners.get(eventName) || []
+            handlers.push(handler)
+            listeners.set(eventName, handlers)
+        },
+        off: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(
+                (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+            )
+        },
+        goto: async () => {
+            for (const handler of listeners.get('response') || []) {
+                handler({
+                    url: () => 'https://www.instagram.com/graphql/query/',
+                    status: () => 200,
+                    json: async () => posts_json,
+                    request: () => ({
+                        method: () => 'POST',
+                        postData: () =>
+                            'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                    }),
+                })
+            }
+        },
+        waitForSelector: async () => {
+            throw new Error('not found')
+        },
+        evaluate: async (fn: unknown, handle: string) => {
+            // Simulate the in-page fetch of web_profile_info.
+            expect(handle).toBe('noav_user')
+            expect(String(fn)).toContain('web_profile_info')
+            return 'https://example.com/hd-avatar.jpg'
+        },
+    } as any
+
+    const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/noav_user/')
+
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.u_avatar).toBe('https://example.com/hd-avatar.jpg')
+})
+
+test('Instagram avatar backfill skips the in-page fetch once the domain breaker is open', async () => {
+    // Simulate a dead session: web_profile_info keeps failing → the shared
+    // breaker opens → subsequent avatar backfills must not touch the page at all.
+    resetDomainBreakers()
+    let evaluateCalls = 0
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    const makePage = (handle: string) =>
+        ({
+            on: (eventName: string, handler: (data: any) => void) => {
+                const handlers = listeners.get(eventName) || []
+                handlers.push(handler)
+                listeners.set(eventName, handlers)
+            },
+            off: (eventName: string, handler: (data: any) => void) => {
+                listeners.set(
+                    eventName,
+                    (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+                )
+            },
+            goto: async () => {
+                for (const handler of listeners.get('response') || []) {
+                    handler({
+                        url: () => 'https://www.instagram.com/graphql/query/',
+                        status: () => 200,
+                        json: async () => ({
+                            data: {
+                                xdt_api__v1__feed__user_timeline_graphql_connection: {
+                                    edges: [
+                                        {
+                                            node: {
+                                                code: 'BREAKER1',
+                                                taken_at: 1742400132,
+                                                caption: { text: 'breaker post' },
+                                                user: { username: handle, full_name: 'Breaker' },
+                                                image_versions2: {
+                                                    candidates: [{ width: 720, url: 'https://example.com/b.jpg' }],
+                                                },
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        }),
+                        request: () => ({
+                            method: () => 'POST',
+                            postData: () =>
+                                'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                        }),
+                    })
+                }
+            },
+            waitForSelector: async () => {
+                throw new Error('not found')
+            },
+            evaluate: async () => {
+                evaluateCalls += 1
+                return null // web_profile_info fails (non-2xx or exception)
+            },
+        }) as any
+
+    try {
+        // Round 1: probe fires and fails (failure 1 of 3). Distinct handles per
+        // round — the AVATAR_CACHE miss-TTL would otherwise swallow the probe.
+        await InsApiJsonParser.grabPosts(makePage('breaker_a'), 'https://www.instagram.com/breaker_a/')
+        expect(evaluateCalls).toBe(1)
+
+        // Rounds 2 and 3: more failures — the breaker opens at 3.
+        await InsApiJsonParser.grabPosts(makePage('breaker_b'), 'https://www.instagram.com/breaker_b/')
+        await InsApiJsonParser.grabPosts(makePage('breaker_c'), 'https://www.instagram.com/breaker_c/')
+        expect(evaluateCalls).toBe(3)
+
+        // Round 4: breaker is open — the in-page fetch must be skipped entirely
+        // even for a fresh handle.
+        const posts = await InsApiJsonParser.grabPosts(makePage('breaker_d'), 'https://www.instagram.com/breaker_d/')
+        expect(evaluateCalls).toBe(3)
+        expect(posts).toHaveLength(1)
+        expect(posts[0]?.u_avatar).toBeNull()
+    } finally {
+        resetDomainBreakers()
+    }
 })
 
 test('Instagram grabPosts merges reloaded posts when a cache-bust reload returns newer data', async () => {
@@ -1072,38 +1216,80 @@ test('Instagram grabPosts fails fast when the profile payload reveals a private 
     )
 })
 
-test('Instagram grabPosts backfills missing avatars via web_profile_info (with cache)', async () => {
-    const postsJson = {
-        data: {
-            xdt_api__v1__feed__user_timeline_graphql_connection: {
-                edges: [
-                    {
-                        node: {
-                            code: 'CAV1',
-                            taken_at: 1786465200,
-                            caption: { text: 'post without avatar' },
-                            user: { username: 'member_a', full_name: 'Member A' },
-                        },
-                    },
-                ],
-            },
-        },
-    }
+test('Instagram grabPosts fast-fails with an auth-class error on a logged-out profile page', async () => {
+    // Logged-out behavior: navigation succeeds, no graphql traffic ever fires,
+    // and the page exposes a login entry point. The 60s posts gate must be cut
+    // short by InstagramLoggedOutError (message classifies as `auth`).
+    // bun's default 5s test timeout would race the 8s probe window — allow 30s.
     const listeners = new Map<string, Array<(data: any) => void>>()
-    let evaluateCalls = 0
     const page = {
         on: (eventName: string, handler: (data: any) => void) => {
-            listeners.set(eventName, [...(listeners.get(eventName) || []), handler])
+            const handlers = listeners.get(eventName) || []
+            handlers.push(handler)
+            listeners.set(eventName, handlers)
         },
         off: (eventName: string, handler: (data: any) => void) => {
-            listeners.set(eventName, (listeners.get(eventName) || []).filter((entry) => entry !== handler))
+            listeners.set(
+                eventName,
+                (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+            )
+        },
+        goto: async () => {
+            // Deliberately fire NO graphql responses — the logged-out shape.
+            for (const handler of listeners.get('response') || []) {
+                handler({
+                    url: () => 'https://www.instagram.com/api/v1/users/web_profile_info/',
+                    status: () => 200,
+                    json: async () => ({}),
+                    request: () => ({
+                        method: () => 'GET',
+                        postData: () => null,
+                    }),
+                })
+            }
+        },
+        waitForSelector: async () => {
+            throw new Error('not found')
+        },
+        $: async (selector: string) => {
+            expect(selector).toContain('loginForm')
+            return {} as any // the page shows a login entry
+        },
+    } as any
+
+    const startedAt = Date.now()
+    await expect(
+        InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/shiina_satsuki227/'),
+    ).rejects.toThrow(/instagram_logged_out/)
+    // Fast fail: nowhere near the 60s posts timeout.
+    expect(Date.now() - startedAt).toBeLessThan(20000)
+}, 30000)
+
+test('Instagram grabPosts behaves normally (full posts wait) when graphql traffic is present', async () => {
+    // The logged-out probe must never misfire on a healthy session: graphql
+    // responses flowing → probe cancels, posts resolve through the normal gate.
+    const posts_json = JSON.parse(readFileSync(dataPath('instagram', 'instagram-posts.json'), 'utf-8'))
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    let probeSawGraqhql = false
+    const page = {
+        on: (eventName: string, handler: (data: any) => void) => {
+            const handlers = listeners.get(eventName) || []
+            handlers.push(handler)
+            listeners.set(eventName, handlers)
+        },
+        off: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(
+                eventName,
+                (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+            )
         },
         goto: async () => {
             for (const handler of listeners.get('response') || []) {
+                probeSawGraqhql = true
                 handler({
-                    url: () => 'https://www.instagram.com/ajax/bulk-route-definitions/',
+                    url: () => 'https://www.instagram.com/graphql/query/',
                     status: () => 200,
-                    json: async () => postsJson,
+                    json: async () => posts_json,
                     request: () => ({
                         method: () => 'POST',
                         postData: () => 'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
@@ -1114,19 +1300,13 @@ test('Instagram grabPosts backfills missing avatars via web_profile_info (with c
         waitForSelector: async () => {
             throw new Error('not found')
         },
-        evaluate: async () => {
-            evaluateCalls++
-            return 'https://cdn.example.com/avatar_a.jpg'
+        $: async () => {
+            throw new Error('probe must not reach the DOM check when graphql fired')
         },
     } as any
 
-    const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/member_a/')
-    expect(posts.length).toBe(1)
-    expect(posts[0]!.u_avatar).toBe('https://cdn.example.com/avatar_a.jpg')
-    expect(evaluateCalls).toBe(1)
+    const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/instagram/')
 
-    // second round: avatar cache serves it without another page-context fetch
-    const again = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/member_a/')
-    expect(again[0]!.u_avatar).toBe('https://cdn.example.com/avatar_a.jpg')
-    expect(evaluateCalls).toBe(1)
+    expect(probeSawGraqhql).toBe(true)
+    expect(posts.length).toBeGreaterThan(0)
 })

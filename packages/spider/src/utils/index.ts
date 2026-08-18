@@ -223,3 +223,4 @@ export { parseNetscapeCookieToPuppeteerCookie, auditNetscapeCookieFile, getCooki
 export type { NetscapeCookieFileAudit }
 export * from './http'
 export * from './browser'
+export * from './domain-breaker'
