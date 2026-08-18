@@ -44,10 +44,14 @@ export class ArticleStore {
     return row !== null
   }
 
-  /** save an article with its ref chain (parents first); returns the new row id or null if it already existed */
+  /** save an article with its ref chain (parents first); returns the new row id, or null if it already existed
+   *  (an existing row with an empty u_avatar is self-healed from the fresh article first) */
   save(article: StoredArticle): number | null {
     const refId = this.saveRefs(article)
-    if (this.exists(article.platform, article.a_id)) return null
+    if (this.exists(article.platform, article.a_id)) {
+      this.healMissingAvatar(article)
+      return null
+    }
     const result = this.store.db
       .query(
         `INSERT INTO ${TABLES[article.platform]}
@@ -79,6 +83,18 @@ export class ArticleStore {
     // only single-level chains are used in production (quote/retweet of one parent)
     const parent = refs[0]!
     return this.save(parent) ?? this.lookupId(parent.platform, parent.a_id)
+  }
+
+  /** fill-when-missing: articles persisted while IG payloads dropped avatar
+   *  fields stay avatar-less forever because save() never updates existing
+   *  rows; backfill the gap when the fresh crawl carries what the row lacks */
+  private healMissingAvatar(article: StoredArticle): void {
+    if (!article.u_avatar) return
+    this.store.db
+      .query(
+        `UPDATE ${TABLES[article.platform]} SET u_avatar = ? WHERE a_id = ? AND (u_avatar IS NULL OR u_avatar = '')`,
+      )
+      .run(article.u_avatar, article.a_id)
   }
 
   lookupId(platform: Platform, aId: string): number | null {

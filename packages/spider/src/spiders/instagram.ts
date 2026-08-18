@@ -850,18 +850,42 @@ namespace InsApiJsonParser {
     }
 
     const AVATAR_CACHE_TTL_MS = 3_600_000
+    // A failed lookup must not poison the cache for the full TTL: IG sessions
+    // are flaky, and a null cached for an hour guarantees avatar-less posts for
+    // an hour. Retry misses quickly instead.
+    const AVATAR_CACHE_MISS_TTL_MS = 60_000
     const AVATAR_CACHE = new Map<string, { url: string | null; expiresAt: number }>()
+
+    // First backfill source at no extra cost: the profile graphql payload the
+    // posts crawl already captured on this same navigation (same fields the
+    // web_profile_info endpoint returns).
+    function avatarFromProfilePayload(payload: unknown): string | null {
+        const user = userFromInstagramProfilePayload(payload)
+        return normalizeInstagramUrl(
+            user?.hd_profile_pic_url_info?.url || user?.profile_pic_url_hd || user?.profile_pic_url,
+        )
+    }
 
     // The XDT timeline / profile graphql payloads intermittently drop the avatar
     // fields; web_profile_info still returns them and works same-origin with the
     // page's session. Used only as a backfill for posts that came out avatar-less.
-    async function fetchAvatarViaWebProfileInfo(page: Page, handle: string): Promise<string | null> {
+    async function fetchAvatarViaWebProfileInfo(
+        page: Page,
+        handle: string,
+        profileUrl?: string,
+    ): Promise<string | null> {
         if (!handle) {
             return null
         }
         const cached = AVATAR_CACHE.get(handle)
         if (cached && cached.expiresAt > Date.now()) {
             return cached.url
+        }
+        const cachedProfileUrl = profileUrl ? readCachedProfilePayload(profileUrl) : null
+        const fromCapturedPayload = cachedProfileUrl ? avatarFromProfilePayload(cachedProfileUrl) : null
+        if (fromCapturedPayload) {
+            AVATAR_CACHE.set(handle, { url: fromCapturedPayload, expiresAt: Date.now() + AVATAR_CACHE_TTL_MS })
+            return fromCapturedPayload
         }
         let url: unknown = null
         try {
@@ -887,11 +911,18 @@ namespace InsApiJsonParser {
             url = null
         }
         const normalized = normalizeInstagramUrl(url)
-        AVATAR_CACHE.set(handle, { url: normalized, expiresAt: Date.now() + AVATAR_CACHE_TTL_MS })
+        AVATAR_CACHE.set(handle, {
+            url: normalized,
+            expiresAt: Date.now() + (normalized ? AVATAR_CACHE_TTL_MS : AVATAR_CACHE_MISS_TTL_MS),
+        })
         return normalized
     }
 
-    async function backfillMissingAvatars(page: Page, posts: Array<GenericArticle<Platform.Instagram>>): Promise<void> {
+    async function backfillMissingAvatars(
+        page: Page,
+        posts: Array<GenericArticle<Platform.Instagram>>,
+        profileUrl?: string,
+    ): Promise<void> {
         const missing = new Map<string, Array<GenericArticle<Platform.Instagram>>>()
         for (const post of posts) {
             if (post.u_avatar || !post.u_id) {
@@ -902,7 +933,7 @@ namespace InsApiJsonParser {
             missing.set(post.u_id, list)
         }
         for (const [handle, items] of missing) {
-            const url = await fetchAvatarViaWebProfileInfo(page, handle)
+            const url = await fetchAvatarViaWebProfileInfo(page, handle, profileUrl)
             if (!url) {
                 continue
             }
@@ -974,7 +1005,7 @@ namespace InsApiJsonParser {
                 // caller falls back to the dedicated highlights navigation
             }
         }
-        await backfillMissingAvatars(page, posts)
+        await backfillMissingAvatars(page, posts, url)
         return { posts, highlights }
     }
 

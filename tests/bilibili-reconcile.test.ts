@@ -28,6 +28,37 @@ function archivesResponse(items: any[], count: number) {
   return Response.json({ code: 0, data: { arc_audits: items.map((a) => ({ Archive: a })), page: { count } } })
 }
 
+test('ArticleStore.save self-heals a missing avatar without overwriting an existing one', () => {
+  const db = new KyestuDb(':memory:')
+  db.migrate(defaultMigrationsDir)
+  const articles = new ArticleStore(db)
+  const base = {
+    platform: 'instagram',
+    a_id: 'DAVATAR1',
+    u_id: 'member_a',
+    username: 'Member A',
+    url: 'https://www.instagram.com/p/DAVATAR1/',
+    content: 'post',
+    created_at: 1,
+    has_media: false,
+  }
+  const first = articles.save({ ...base, u_avatar: null } as any)
+  expect(first).toBeGreaterThan(0)
+  // re-save of an already-present article returns null (unchanged contract)
+  const second = articles.save({ ...base, u_avatar: 'https://cdn.example.com/a.jpg' } as any)
+  expect(second).toBeNull()
+  const healed = db.db
+    .query("SELECT u_avatar FROM instagram_article WHERE a_id = 'DAVATAR1'")
+    .get() as { u_avatar: string | null }
+  expect(healed.u_avatar).toBe('https://cdn.example.com/a.jpg')
+  // an existing avatar is never overwritten by a later save
+  articles.save({ ...base, u_avatar: 'https://cdn.example.com/b.jpg' } as any)
+  const kept = db.db
+    .query("SELECT u_avatar FROM instagram_article WHERE a_id = 'DAVATAR1'")
+    .get() as { u_avatar: string | null }
+  expect(kept.u_avatar).toBe('https://cdn.example.com/a.jpg')
+})
+
 test('cookie header: JSON cookie file, sessdata fallback, missing throws', () => {
   const dir = mkdtempSync(join(tmpdir(), 'kyestu-recon-'))
   expect(bilibiliCookieHeader({ id: 't', cookie_file: cookieFile(dir) })).toBe('SESSDATA=s1; bili_jct=j1')
