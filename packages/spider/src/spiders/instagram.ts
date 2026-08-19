@@ -113,6 +113,68 @@ class InstagramLoggedOutError extends Error {
     }
 }
 
+/**
+ * The only session-death predicates that exist in the client (intel §1.3,
+ * double-verified): response-body flags login_required / checkpoint_required /
+ * two_factor_required. They arrive with HTTP 200, so the graphql gate must
+ * inspect the parsed body. `delta_login_review` inside a challenge context is
+ * surfaced as hint=environment-changed: same cookie + new IP/UA fingerprint,
+ * so restoring the original environment beats swapping cookies.
+ */
+class InstagramSessionDeadError extends Error {
+    readonly code = 'instagram_session_dead'
+    readonly predicate: string
+
+    constructor(scope: string, predicate: string, hint?: 'environment-changed') {
+        super(
+            `Instagram session dead (${predicate}) detected in ${scope} (instagram_session_dead${hint ? ` hint=${hint}` : ''})`,
+        )
+        this.name = 'InstagramSessionDeadError'
+        this.predicate = predicate
+    }
+}
+
+const INSTAGRAM_SESSION_DEATH_PREDICATES = ['login_required', 'checkpoint_required', 'two_factor_required'] as const
+
+/** Returns the matched death predicate, or null when the body looks alive. */
+function instagramSessionDeathPredicate(json: any): string | null {
+    if (!json || typeof json !== 'object') {
+        return null
+    }
+    const scopes = [json, (json as any).data]
+    for (const scope of scopes) {
+        if (!scope || typeof scope !== 'object') {
+            continue
+        }
+        for (const predicate of INSTAGRAM_SESSION_DEATH_PREDICATES) {
+            if (scope[predicate] === true || scope[predicate] === 'true') {
+                return predicate
+            }
+        }
+    }
+    return null
+}
+
+/**
+ * delta_login_review in a challenge context means the environment fingerprint
+ * changed (new IP/UA), not that the cookie expired. Human-readable hint only.
+ */
+function instagramChallengeContextHint(json: any): 'environment-changed' | null {
+    if (!json || typeof json !== 'object') {
+        return null
+    }
+    const serialized = JSON.stringify(json)
+    if (!serialized.includes('delta_login_review')) {
+        return null
+    }
+    const challengeRelated =
+        typeof json.challenge === 'object' ||
+        typeof (json as any).data?.challenge === 'object' ||
+        typeof (json as any).checkpoint_url === 'string' ||
+        typeof (json as any).data?.checkpoint_url === 'string'
+    return challengeRelated ? 'environment-changed' : null
+}
+
 function normalizeInstagramHandle(value: unknown) {
     return String(value || '')
         .trim()
@@ -405,30 +467,46 @@ namespace InsApiJsonParser {
 
     function mediaParser(edge: any): Array<GenericMediaInfo> {
         let arr = [] as Array<GenericMediaInfo>
-        const pickBestCandidateUrl = (candidates: any): string | null => {
+        // Candidates are kept width-descending (app behavior: it switches to a
+        // fallback candidate ~10s before the signed URL expires; there is no
+        // re-sign path in the client). The top candidate stays the primary
+        // `url`; the rest become the ordered `fallback_urls` chain.
+        const orderedCandidateUrls = (candidates: any): string[] => {
             if (!Array.isArray(candidates) || candidates.length === 0) {
-                return null
+                return []
             }
-            return [...candidates].sort((a: any, b: any) => (b?.width || 0) - (a?.width || 0))[0]?.url || null
+            return [...candidates]
+                .sort((a: any, b: any) => (b?.width || 0) - (a?.width || 0))
+                .map((candidate: any) => normalizeInstagramUrl(candidate?.url))
+                .filter((url: string | null): url is string => Boolean(url))
         }
-        const pushMedia = (type: GenericMediaInfo['type'], url: string | null) => {
-            if (!url) {
+        const pickBestCandidateUrl = (candidates: any): string | null => {
+            return orderedCandidateUrls(candidates)[0] ?? null
+        }
+        const pushMedia = (type: GenericMediaInfo['type'], urls: string[]) => {
+            if (urls.length === 0) {
                 return
             }
+            const [url, ...fallbackUrls] = urls
             arr.push({
                 type,
-                url,
+                url: url!,
+                ...(fallbackUrls.length > 0 ? { fallback_urls: fallbackUrls } : {}),
             })
         }
         const pushNodeMedia = (node: any) => {
-            const imageUrl = pickBestCandidateUrl(node?.image_versions2?.candidates)
-            const videoUrl = pickBestCandidateUrl(node?.video_versions) || normalizeInstagramUrl(node?.video_url)
-            if (videoUrl) {
-                pushMedia('video_thumbnail', imageUrl)
-                pushMedia('video', videoUrl)
+            const imageUrls = orderedCandidateUrls(node?.image_versions2?.candidates)
+            const videoUrls = orderedCandidateUrls(node?.video_versions)
+            const legacyVideoUrl = normalizeInstagramUrl(node?.video_url)
+            if (legacyVideoUrl && !videoUrls.includes(legacyVideoUrl)) {
+                videoUrls.push(legacyVideoUrl)
+            }
+            if (videoUrls.length > 0) {
+                pushMedia('video_thumbnail', imageUrls)
+                pushMedia('video', videoUrls)
                 return
             }
-            pushMedia('photo', imageUrl)
+            pushMedia('photo', imageUrls)
         }
         // cover
         const cover_candidates = edge?.image_versions2?.candidates
@@ -439,7 +517,11 @@ namespace InsApiJsonParser {
         const video_candidates = edge?.video_versions
         const videoUrlFallback = normalizeInstagramUrl(edge?.video_url)
         if ((video_candidates || videoUrlFallback) && !arr.some((item) => item.type === 'video')) {
-            pushMedia('video', pickBestCandidateUrl(video_candidates) || videoUrlFallback)
+            const videoUrls = orderedCandidateUrls(video_candidates)
+            if (videoUrlFallback && !videoUrls.includes(videoUrlFallback)) {
+                videoUrls.push(videoUrlFallback)
+            }
+            pushMedia('video', videoUrls)
         }
         // carousel (current node.carousel_media shape, plus the legacy sidecar
         // edge_sidecar_to_children.edges shape as a forward-compatibility fallback)
@@ -743,7 +825,25 @@ namespace InsApiJsonParser {
                 return
             }
             try {
-                control.done(await response.json())
+                const json = await response.json()
+                // Session-death predicates (intel §1.3, verified on both Android
+                // and iOS): the body of a dead/challenged session carries
+                // login_required / checkpoint_required / two_factor_required at
+                // the top level or right outside `data`. A 200 status means
+                // nothing here — these arrive with HTTP 200.
+                const deadPredicate = instagramSessionDeathPredicate(json)
+                if (deadPredicate) {
+                    const hint = instagramChallengeContextHint(json)
+                    control.fail(
+                        new InstagramSessionDeadError(
+                            `${friendlyNameKey} response body`,
+                            deadPredicate,
+                            hint === 'environment-changed' ? hint : undefined,
+                        ),
+                    )
+                    return
+                }
+                control.done(json)
             } catch (e) {
                 control.fail(e)
             }
@@ -953,6 +1053,41 @@ namespace InsApiJsonParser {
     const AVATAR_CACHE_MISS_TTL_MS = 60_000
     const AVATAR_CACHE = new Map<string, { url: string | null; expiresAt: number }>()
 
+    // ---------------------------------------------------------------------
+    // X-IG-WWW-Claim replay (app session self-healing parity, intel §1.2).
+    //
+    // The app sends `X-IG-WWW-Claim: <stored>` on every api/v1 call — an empty
+    // or stale claim is sent as literal `0`, which makes the server issue a
+    // fresh one in `X-IG-Set-WWW-Claim`. The browser never persists custom
+    // response headers, so for the api/v1 requests OUR CODE issues in the page
+    // context we replay the stored claim ourselves. Claims are session-scoped
+    // (no client TTL, server rotates); per-page in-memory storage is enough.
+    // Deliberately NOT applied to graphql requests the page fires on its own —
+    // the browser owns those and must not be counterfeited.
+    // ---------------------------------------------------------------------
+    const WWW_CLAIM_STORE = new Map<string, string>()
+    const WWW_CLAIM_SEND_ZERO = '0'
+
+    function claimStorageKeyForPage(page: Page): string {
+        try {
+            return new URL(page.url()).origin || 'about:blank'
+        } catch {
+            return 'about:blank'
+        }
+    }
+
+    function storedWwwClaimForPage(page: Page): string {
+        return WWW_CLAIM_STORE.get(claimStorageKeyForPage(page)) || WWW_CLAIM_SEND_ZERO
+    }
+
+    function storeWwwClaimFromResponseHeaders(page: Page, headers: Record<string, string> | null | undefined) {
+        // Puppeteer lowercases response header names.
+        const claim = headers?.['x-ig-set-www-claim']
+        if (typeof claim === 'string' && claim.trim()) {
+            WWW_CLAIM_STORE.set(claimStorageKeyForPage(page), claim.trim())
+        }
+    }
+
     // First backfill source at no extra cost: the profile graphql payload the
     // posts crawl already captured on this same navigation (same fields the
     // web_profile_info endpoint returns).
@@ -993,25 +1128,46 @@ namespace InsApiJsonParser {
         let url: unknown = null
         try {
             url = await (page as any).evaluate?.(
-                async (h: string) => {
+                async (h: string, claim: string) => {
                     try {
                         const res = await fetch(
                             `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(h)}`,
-                            { headers: { 'X-IG-App-ID': '936619743392459' }, credentials: 'include' },
+                            {
+                                headers: { 'X-IG-App-ID': '936619743392459', 'X-IG-WWW-Claim': claim },
+                                credentials: 'include',
+                            },
                         )
+                        // Persist a rotated claim exactly like the app does: the
+                        // header is only visible to the JS we run ourselves; the
+                        // browser will not keep it for the next request.
+                        const rotatedClaim = res.headers.get('X-IG-Set-WWW-Claim')
                         if (!res.ok) {
-                            return null
+                            return { url: null, rotatedClaim }
                         }
-                        const user = (await res.json())?.data?.user
-                        return user?.hd_profile_pic_url_info?.url || user?.profile_pic_url_hd || user?.profile_pic_url || null
+                        const user = (await res.json().catch(() => null))?.data?.user
+                        const avatarUrl =
+                            user?.hd_profile_pic_url_info?.url || user?.profile_pic_url_hd || user?.profile_pic_url || null
+                        return { url: avatarUrl, rotatedClaim }
                     } catch {
                         return null
                     }
                 },
                 handle,
+                storedWwwClaimForPage(page),
             )
         } catch {
             url = null
+        }
+        // The evaluate returns { url, rotatedClaim } | null (legacy test mocks
+        // may return a bare string avatar URL — accept both shapes).
+        if (url && typeof url === 'object' && (url as any).rotatedClaim !== undefined) {
+            const rotated = (url as any).rotatedClaim
+            if (typeof rotated === 'string' && rotated.trim()) {
+                WWW_CLAIM_STORE.set(claimStorageKeyForPage(page), rotated.trim())
+            }
+            url = (url as any).url ?? null
+        } else if (url && typeof url === 'object') {
+            url = (url as any).url ?? null
         }
         const normalized = normalizeInstagramUrl(url)
         if (normalized) {
@@ -1279,6 +1435,6 @@ namespace InsApiJsonParser {
     }
 }
 
-export { ArticleTypeEnum, InstagramArticleTaskType, InstagramPrivateUnfollowedError, InstagramLoggedOutError, InsApiJsonParser }
+export { ArticleTypeEnum, InstagramArticleTaskType, InstagramPrivateUnfollowedError, InstagramLoggedOutError, InstagramSessionDeadError, InsApiJsonParser }
 export type { InstagramProfileStatus }
 export { InstagramSpider }

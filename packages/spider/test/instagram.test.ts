@@ -7,6 +7,7 @@ import { createLogger, winston, format } from '@kyestu/log'
 import type { GenericFollows } from '../src/types'
 import { InstagramSpider, InsApiJsonParser } from '../src/spiders/instagram'
 import { resetDomainBreakers } from '../src/utils/domain-breaker'
+import { isInstagramMediaUrlExpired, normalizeInstagramMediaUrlForCache } from '../src/utils/instagram-media-url'
 import { test, expect } from 'bun:test'
 
 const dataPath = (...parts: Array<string>) => join(import.meta.dir, 'data', ...parts)
@@ -191,6 +192,7 @@ test('Instagram backfills avatar-less posts via page-context web_profile_info', 
         },
         off: (eventName: string, handler: (data: any) => void) => {
             listeners.set(
+                eventName,
                 (listeners.get(eventName) || []).filter((entry) => entry !== handler),
             )
         },
@@ -212,7 +214,8 @@ test('Instagram backfills avatar-less posts via page-context web_profile_info', 
             throw new Error('not found')
         },
         evaluate: async (fn: unknown, handle: string) => {
-            // Simulate the in-page fetch of web_profile_info.
+            // Simulate the in-page fetch of web_profile_info (legacy bare-string
+            // return shape is still accepted).
             expect(handle).toBe('noav_user')
             expect(String(fn)).toContain('web_profile_info')
             return 'https://example.com/hd-avatar.jpg'
@@ -1308,5 +1311,329 @@ test('Instagram grabPosts behaves normally (full posts wait) when graphql traffi
     const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/instagram/')
 
     expect(probeSawGraqhql).toBe(true)
+    expect(posts.length).toBeGreaterThan(0)
+})
+
+// ---------------------------------------------------------------------------
+// P3a: `oe` expiry pre-check (hex epoch seconds) + cache-key normalization
+// ---------------------------------------------------------------------------
+
+test('Instagram media URL oe expiry pre-check decodes hex epoch and clamps nonsense', () => {
+    const now = Date.UTC(2026, 7, 20, 0, 0, 0) // 2026-08-20
+    const nowSeconds = Math.floor(now / 1000)
+
+    // Future expiry → alive.
+    const futureHex = (nowSeconds + 3600).toString(16)
+    expect(isInstagramMediaUrlExpired(`https://scontent.cdninstagram.com/v/x.jpg?oe=${futureHex}`, now)).toBeFalse()
+    // Past expiry → dead.
+    const pastHex = (nowSeconds - 3600).toString(16)
+    expect(isInstagramMediaUrlExpired(`https://scontent.cdninstagram.com/v/x.jpg?oe=${pastHex}`, now)).toBeTrue()
+    // Exactly now → dead.
+    expect(isInstagramMediaUrlExpired(`https://scontent.cdninstagram.com/v/x.jpg?oe=${nowSeconds.toString(16)}`, now)).toBeTrue()
+    // No oe / undecodable → conservatively alive.
+    expect(isInstagramMediaUrlExpired('https://scontent.cdninstagram.com/v/x.jpg?nc_ht=x', now)).toBeFalse()
+    expect(isInstagramMediaUrlExpired('https://scontent.cdninstagram.com/v/x.jpg?oe=zzz', now)).toBeFalse()
+    // >10 years out → treated as no information (alive, not trusted).
+    const absurdHex = (nowSeconds + 11 * 365 * 24 * 60 * 60).toString(16)
+    expect(isInstagramMediaUrlExpired(`https://scontent.cdninstagram.com/v/x.jpg?oe=${absurdHex}`, now)).toBeFalse()
+})
+
+test('Instagram media URL cache normalization strips signature params and sorts identity params', () => {
+    const normalizedA = normalizeInstagramMediaUrlForCache(
+        'https://scontent.cdninstagram.com/v/t51.2885-15/a.jpg?_nc_ht=cdn&oe=64F00000&oh=AAA&__gda__=X&efg=1&hdnea=Y&logcdn=Z&_nc_ohc=B&stp=dst-jpg',
+    )
+    const normalizedB = normalizeInstagramMediaUrlForCache(
+        'https://scontent.cdninstagram.com/v/t51.2885-15/a.jpg?oe=64EFFFF&oh=BBB&stp=dst-jpg&__gda__=W',
+    )
+    // Same pathname, all signing params stripped, remaining identity params
+    // (stp) kept and order-insensitive → same key.
+    expect(normalizedA).toBe('https://scontent.cdninstagram.com/v/t51.2885-15/a.jpg?stp=dst-jpg')
+    expect(normalizedB).toBe(normalizedA)
+})
+
+// ---------------------------------------------------------------------------
+// P3b: candidates fallback chain in mediaParser
+// ---------------------------------------------------------------------------
+
+test('Instagram media parser keeps the full width-descending candidate chain as fallback_urls', () => {
+    const posts = InsApiJsonParser.postsParser({
+        data: {
+            user: {
+                edge_owner_to_timeline_media: {
+                    edges: [
+                        {
+                            node: {
+                                code: 'FALLBACK1',
+                                taken_at: 1773845200,
+                                caption: { text: 'multi-candidate' },
+                                user: { username: 'ig_user', full_name: 'IG User' },
+                                image_versions2: {
+                                    candidates: [
+                                        { width: 480, url: 'https://example.com/480.jpg' },
+                                        { width: 1080, url: 'https://example.com/1080.jpg' },
+                                        { width: 720, url: 'https://example.com/720.jpg' },
+                                    ],
+                                },
+                                video_versions: [
+                                    { width: 480, url: 'https://example.com/v480.mp4' },
+                                    { width: 1080, url: 'https://example.com/v1080.mp4' },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    })
+
+    expect(posts[0]?.media).toEqual([
+        {
+            type: 'video_thumbnail',
+            url: 'https://example.com/1080.jpg',
+            fallback_urls: ['https://example.com/720.jpg', 'https://example.com/480.jpg'],
+        },
+        {
+            type: 'video',
+            url: 'https://example.com/v1080.mp4',
+            fallback_urls: ['https://example.com/v480.mp4'],
+        },
+    ])
+})
+
+test('Instagram media parser omits fallback_urls when a single candidate exists', () => {
+    const posts = InsApiJsonParser.postsParser({
+        data: {
+            user: {
+                edge_owner_to_timeline_media: {
+                    edges: [
+                        {
+                            node: {
+                                code: 'SINGLE1',
+                                taken_at: 1773845200,
+                                caption: { text: 'single' },
+                                user: { username: 'ig_user' },
+                                image_versions2: { candidates: [{ width: 720, url: 'https://example.com/one.jpg' }] },
+                            },
+                        },
+                    ],
+                },
+            },
+        },
+    })
+
+    expect(posts[0]?.media).toEqual([{ type: 'photo', url: 'https://example.com/one.jpg' }])
+})
+
+// ---------------------------------------------------------------------------
+// P1: X-IG-WWW-Claim replay on the code-initiated web_profile_info fetch
+// ---------------------------------------------------------------------------
+
+test('Instagram avatar backfill replays X-IG-WWW-Claim and persists the rotated claim', async () => {
+    resetDomainBreakers()
+    const seenClaims: Array<string> = []
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    let rotatedClaimValue: string | null = 'ROTATED_CLAIM_1'
+    const makePage = (handle: string) =>
+        ({
+            url: () => 'https://www.instagram.com/',
+            on: (eventName: string, handler: (data: any) => void) => {
+                const handlers = listeners.get(eventName) || []
+                handlers.push(handler)
+                listeners.set(eventName, handlers)
+            },
+            off: (eventName: string, handler: (data: any) => void) => {
+                listeners.set(
+                    eventName,
+                    (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+                )
+            },
+            goto: async () => {
+                for (const handler of listeners.get('response') || []) {
+                    handler({
+                        url: () => 'https://www.instagram.com/graphql/query/',
+                        status: () => 200,
+                        json: async () => ({
+                            data: {
+                                xdt_api__v1__feed__user_timeline_graphql_connection: {
+                                    edges: [
+                                        {
+                                            node: {
+                                                code: `CLAIM-${handle}`,
+                                                taken_at: 1742400132,
+                                                caption: { text: 'claim post' },
+                                                user: { username: handle, full_name: 'Claim' },
+                                                image_versions2: {
+                                                    candidates: [{ width: 720, url: `https://example.com/${handle}.jpg` }],
+                                                },
+                                            },
+                                        },
+                                    ],
+                                },
+                            },
+                        }),
+                        request: () => ({
+                            method: () => 'POST',
+                            postData: () => 'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                        }),
+                    })
+                }
+            },
+            waitForSelector: async () => {
+                throw new Error('not found')
+            },
+            evaluate: async (fn: unknown, ...args: Array<any>) => {
+                seenClaims.push(String(args[1]))
+                expect(String(fn)).toContain('web_profile_info')
+                return {
+                    url: `https://example.com/${String(args[0])}-avatar.jpg`,
+                    rotatedClaim: rotatedClaimValue,
+                }
+            },
+        }) as any
+
+    try {
+        // First backfill: no stored claim → must send the literal "0" trigger.
+        await InsApiJsonParser.grabPosts(makePage('claim_a'), 'https://www.instagram.com/claim_a/')
+        expect(seenClaims).toEqual(['0'])
+
+        // Second backfill on the same page origin: the rotated claim is replayed.
+        rotatedClaimValue = 'ROTATED_CLAIM_2'
+        await InsApiJsonParser.grabPosts(makePage('claim_b'), 'https://www.instagram.com/claim_b/')
+        expect(seenClaims).toEqual(['0', 'ROTATED_CLAIM_1'])
+    } finally {
+        resetDomainBreakers()
+    }
+})
+
+// ---------------------------------------------------------------------------
+// P4: three session-death body predicates on the graphql gate
+// ---------------------------------------------------------------------------
+
+test('Instagram graphql gate fails with InstagramSessionDeadError on login_required body', async () => {
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    const page = {
+        on: (eventName: string, handler: (data: any) => void) => {
+            const handlers = listeners.get(eventName) || []
+            handlers.push(handler)
+            listeners.set(eventName, handlers)
+        },
+        off: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(
+                eventName,
+                (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+            )
+        },
+        goto: async () => {
+            for (const handler of listeners.get('response') || []) {
+                handler({
+                    url: () => 'https://www.instagram.com/graphql/query/',
+                    status: () => 200,
+                    json: async () => ({
+                        login_required: true,
+                        challenge: {
+                            url: 'https://www.instagram.com/challenge/123/',
+                            challenge_context: JSON.stringify({ challenge_type: 'delta_login_review' }),
+                            ect: '1',
+                        },
+                    }),
+                    request: () => ({
+                        method: () => 'POST',
+                        postData: () => 'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                    }),
+                })
+            }
+        },
+        waitForSelector: async () => {
+            throw new Error('not found')
+        },
+    } as any
+
+    await expect(InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/someone/')).rejects.toThrow(
+        /login_required.*instagram_session_dead.*hint=environment-changed/,
+    )
+})
+
+test('Instagram graphql gate detects checkpoint_required and two_factor_required outside data', async () => {
+    const makePage = (body: any) => {
+        const listeners = new Map<string, Array<(data: any) => void>>()
+        return {
+            page: {
+                on: (eventName: string, handler: (data: any) => void) => {
+                    const handlers = listeners.get(eventName) || []
+                    handlers.push(handler)
+                    listeners.set(eventName, handlers)
+                },
+                off: (eventName: string, handler: (data: any) => void) => {
+                    listeners.set(
+                        eventName,
+                        (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+                    )
+                },
+                goto: async () => {
+                    for (const handler of listeners.get('response') || []) {
+                        handler({
+                            url: () => 'https://www.instagram.com/graphql/query/',
+                            status: () => 200,
+                            json: async () => body,
+                            request: () => ({
+                                method: () => 'POST',
+                                postData: () =>
+                                    'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                            }),
+                        })
+                    }
+                },
+                waitForSelector: async () => {
+                    throw new Error('not found')
+                },
+            } as any,
+        }
+    }
+
+    await expect(
+        InsApiJsonParser.grabPosts(makePage({ data: { checkpoint_required: true } }).page, 'https://www.instagram.com/a/'),
+    ).rejects.toThrow(/checkpoint_required.*instagram_session_dead/)
+    await expect(
+        InsApiJsonParser.grabPosts(
+            makePage({ data: { two_factor_required: 'true' } }).page,
+            'https://www.instagram.com/b/',
+        ),
+    ).rejects.toThrow(/two_factor_required.*instagram_session_dead/)
+})
+
+test('Instagram graphql gate passes healthy payloads with unrelated boolean flags', async () => {
+    const posts_json = JSON.parse(readFileSync(dataPath('instagram', 'instagram-posts.json'), 'utf-8'))
+    const listeners = new Map<string, Array<(data: any) => void>>()
+    const page = {
+        on: (eventName: string, handler: (data: any) => void) => {
+            const handlers = listeners.get(eventName) || []
+            handlers.push(handler)
+            listeners.set(eventName, handlers)
+        },
+        off: (eventName: string, handler: (data: any) => void) => {
+            listeners.set(
+                eventName,
+                (listeners.get(eventName) || []).filter((entry) => entry !== handler),
+            )
+        },
+        goto: async () => {
+            for (const handler of listeners.get('response') || []) {
+                handler({
+                    url: () => 'https://www.instagram.com/graphql/query/',
+                    status: () => 200,
+                    json: async () => ({ ...posts_json, two_factor_required: false, login_required: 'nope' }),
+                    request: () => ({
+                        method: () => 'POST',
+                        postData: () => 'av=0&fb_api_req_friendly_name=PolarisProfilePostsQuery&variables=%7B%7D',
+                    }),
+                })
+            }
+        },
+        waitForSelector: async () => {
+            throw new Error('not found')
+        },
+    } as any
+
+    const posts = await InsApiJsonParser.grabPosts(page, 'https://www.instagram.com/instagram/')
     expect(posts.length).toBeGreaterThan(0)
 })

@@ -37,11 +37,15 @@ export function classifyCrawlError(error: unknown): CrawlErrorClass {
   if (code === 'instagram_private_unfollowed') return 'private_unfollowed'
   if (code === 'tiktok_invalid_handle') return 'invalid_handle'
   const message = error instanceof Error ? error.message : String(error)
+  // Body-predicate session death (login_required / checkpoint_required /
+  // two_factor_required with HTTP 200) — auth-class, no retry (intel §1.3).
+  if (code === 'instagram_session_dead') return 'auth'
   if (/429|rate.?limit|too many requests/i.test(message)) return 'rate_limit'
   if (/login|auth|csrf|cookie|403|401/i.test(message)) return 'auth'
   if (/timeout|timed out/i.test(message)) return 'timeout'
   if (/format may have changed|parse/i.test(message)) return 'parser'
   if (/network|econn|socket|fetch failed|502|503|504/i.test(message)) return 'transient'
+  if (/instagram_session_dead/i.test(message)) return 'auth'
   return 'unknown'
 }
 

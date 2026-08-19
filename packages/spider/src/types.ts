@@ -66,6 +66,13 @@ interface GenericMediaInfo {
      * best quality url
      */
     url: string
+    /**
+     * Ordered lower-resolution candidates for the same asset (width desc).
+     * Consumed as a fallback chain when the primary URL fails or its `oe`
+     * expiry already passed — Instagram rotates CDN signatures and the only
+     * client-side renewal is switching candidates, never re-signing.
+     */
+    fallback_urls?: string[]
     alt?: string
 }
 

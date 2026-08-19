@@ -404,6 +404,22 @@ test('cooldown: rate_limit honors embedded retry_after; other classes keep base 
   expect(map3.hit('u3', 'parser')).toBe(0)
 })
 
+// ---------- regression: IG body-predicate session death classifies as auth ----------
+
+test('cooldown: instagram_session_dead (code or message) classifies auth and never retries', async () => {
+  const { classifyCrawlError, shouldRetry } = await import('../src/pipeline/cooldown')
+  const dead = new Error(
+    'Instagram session dead (two_factor_required) detected in PolarisProfilePostsQuery response body (instagram_session_dead hint=environment-changed)',
+  )
+  ;(dead as any).code = 'instagram_session_dead'
+  expect(classifyCrawlError(dead)).toBe('auth')
+  // wrapped/wire form: no code property, only the message token
+  expect(classifyCrawlError(new Error('... (instagram_session_dead)'))).toBe('auth')
+  expect(shouldRetry('auth', 'instagram')).toBe(false)
+  // healthy predicates elsewhere in a message must not flip to auth
+  expect(classifyCrawlError(new Error('Instagram session dead (login_required) detected in X response body (instagram_session_dead)'))).toBe('auth')
+})
+
 // ---------- regression: duplicate enqueue into the same window is idempotent ----------
 
 test('aggregation: re-enqueue of the same article key in one window is a no-op', () => {

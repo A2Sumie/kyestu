@@ -224,3 +224,4 @@ export type { NetscapeCookieFileAudit }
 export * from './http'
 export * from './browser'
 export * from './domain-breaker'
+export * from './instagram-media-url'
