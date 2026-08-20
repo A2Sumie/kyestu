@@ -38,7 +38,7 @@ cases/ 下的测试文件按这里的前缀引用。
 | D1 | RISK_COOLDOWN_MS 全表 + IG 专属 override | spider-manager.ts:78-90 | 全表钉死 | HC-01 |
 | D2 | 升级 ×2^n（≤×8）cap 6h；遵守 Retry-After cap 6h | spider-manager.ts:2114-2149 | 原样移植 | HC-02 |
 | D3 | 不重试类别：auth/rate_limit/parser/private_unfollowed/invalid_handle；IG 连 timeout 都不重试 | spider-manager.ts:396-416 | 保留 | HC-03 |
-| D4 | 冷却键格式 platform:host:profile[:igHandle] | spider-manager.ts:2068-2082 | 移到常驻 provider 时键不变 | HC-01 |
+| D4 | 冷却键隔离粒度：旧格式 platform:host:profile[:igHandle] —— handle 级隔离最初只给 IG；2026-08-20 @sally_amaki 被风控误判 invalid_handle，单号冷却冻结全部 8 个 TT 目标 ~6h/次（idol-bbq-utils 5693a86 已把 per-handle scope 扩到 TikTok）；kyestu 直接按完整 target URL 键控（crawler.ts round 循环），语义 = 单目标失败绝不波及同会话兄弟目标 | spider-manager.ts:2074-2088, crawler.ts:213-236 | 键格式可变，隔离语义必须钉死：任何分类的冷却都不得跨 target 泄漏 | HC-01, HC-07 |
 | D5 | 负缓存族：X replies-404 30min / rest-id 24h / 查询id 12h / IG profile 120s / TT secuid 6h / invalid 24h | x.ts:160-163, tiktok.ts:429-441, instagram.ts:651 | 全部钉死 | HC-04/05 |
 
 ## E. 去重叠叠（最易回归区）

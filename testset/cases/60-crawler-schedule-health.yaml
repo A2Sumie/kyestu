@@ -41,7 +41,15 @@ cases:
     anchor: spider-manager.ts:78-90
     given: 各类错误
     when: setCooldownForError
-    then: 冷却时长逐值相等（含键格式 platform:host:profile[:igHandle]）
+    then: 冷却时长逐值相等（键隔离语义见 HC-07；旧键格式 platform:host:profile[:igHandle] 已被 per-target 隔离取代）
+  - id: HC-07
+    title: 冷却按 target 隔离：单 handle 的 invalid_handle 不得波及同会话兄弟 handle
+    layer: lifecycle
+    anchor: crawler.ts:213-236（CooldowndMap 按完整 URL 键控）；旧系统事故锚点 spider-manager.ts:2074-2088（2026-08-20 sally_amaki 误判冻结全 TT 会话，idol-bbq-utils 5693a86 修复）
+    given: 同 crawler 两个 TT handle，第一个持续抛 tiktok_invalid_handle
+    when: 同一抓取轮
+    then: 第二个 handle 照常抓取不被跳过；失败 handle 单独进入冷却
+    test: tests/cooldown-isolation.test.ts
   - id: HC-02
     title: 冷却升级 ×2^n（≤×8）cap 6h；遵守 Retry-After
     layer: unit
