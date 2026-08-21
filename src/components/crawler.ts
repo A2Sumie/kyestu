@@ -1,4 +1,4 @@
-import { spiderRegistry } from '@kyestu/spider'
+import { spiderRegistry, probeTikTokLiveStatus, parseNetscapeCookieToPuppeteerCookie, getCookieString } from '@kyestu/spider'
 import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { ArticleStore } from '../pipeline/articles'
@@ -6,6 +6,8 @@ import { CooldownMap, classifyCrawlError, shouldRetry } from '../pipeline/cooldo
 import { ServiceStateStore, cooldownStore } from '../pipeline/service-state'
 import { nextRunAt, resolveCrawlerSchedule } from '../pipeline/schedule'
 import { LiveRelay } from '../pipeline/live-relay'
+import { tiktokLivePagePacer } from '../pipeline/host-pacer'
+import { expandPath } from './cookie-keepalive'
 import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus } from './bus'
 import type { BrowserSessionPool } from './browser-pool'
@@ -81,6 +83,41 @@ export function setLiveStatusProbeForTest(probe: LiveStatusProbe | null): void {
 }
 
 const defaultLiveStatusProbe: LiveStatusProbe = async () => ({ live: false })
+
+/**
+ * Platform-aware live status probe. Only TikTok has a real implementation
+ * (chain B: /@handle/live hydration JSON, sa7 e2e); every other platform
+ * keeps the stub behaviour. The TikTok probe goes through the process-wide
+ * per-host pacer (WAF threshold: live-page hydration <= 1 req / 8s, sa7 §4)
+ * and resolves credentials the same way the spider does: explicit
+ * cookieString wins, else the Netscape jar named by cookie_file (re-read per
+ * probe so cookie-keepalive jar rotations are picked up).
+ */
+function buildLiveStatusProbe(platform: string, config: Record<string, any>, entryId: string): LiveStatusProbe {
+  if (platform !== 'tiktok') return defaultLiveStatusProbe
+  const resolveCookie = (): string | undefined => {
+    if (typeof config.cookieString === 'string' && config.cookieString.trim()) return config.cookieString
+    if (typeof config.cookie_file !== 'string' || !config.cookie_file) return undefined
+    try {
+      return getCookieString(parseNetscapeCookieToPuppeteerCookie(expandPath(config.cookie_file)))
+    } catch {
+      return undefined
+    }
+  }
+  return async (url) => {
+    const handle = url.match(/@([A-Za-z0-9._]+)/)?.[1]
+    if (!handle) {
+      console.warn(`[crawler:${entryId}] tiktok live probe: cannot derive handle from ${url}`)
+      return { live: false }
+    }
+    await tiktokLivePagePacer.waitTurn('www.tiktok.com')
+    const result = await probeTikTokLiveStatus(handle, { cookieString: resolveCookie() })
+    if (!result.live && result.reason) {
+      console.warn(`[crawler:${entryId}] tiktok live probe @${handle}: ${result.reason}`)
+    }
+    return { live: result.live, m3u8: result.m3u8, title: result.title }
+  }
+}
 
 function buildUrls(config: Record<string, any>): string[] {
   if (Array.isArray(config.websites) && config.websites.length) return config.websites
@@ -162,7 +199,7 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
         ? // capture only; player sync lives in the app/live-player plugin
           new LiveRelay(config.live_relay, undefined, (event) => bus.emit('live', { ...event, crawlerId: entryId }))
         : null
-      const liveStatusProbe = liveRelay ? (testLiveStatusProbe ?? defaultLiveStatusProbe) : null
+      const liveStatusProbe = liveRelay ? (testLiveStatusProbe ?? buildLiveStatusProbe(platform, config, entryId)) : null
 
       const persistOne = fiber.wrap(async (raw: CrawlResult): Promise<void> => {
         const platformName = PLATFORM_NAME[raw.platform] ?? platform

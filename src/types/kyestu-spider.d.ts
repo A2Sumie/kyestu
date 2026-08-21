@@ -63,6 +63,24 @@ declare module '@kyestu/spider' {
   export const X: Record<string, unknown>
   export const Instagram: Record<string, unknown>
   export const Tiktok: Record<string, unknown>
+  export const TiktokLive: Record<string, unknown>
+
+  // ---- spiders/tiktok-live (chain-B live status probe) ---------------------
+  export interface TikTokLiveProbeResult {
+    live: boolean
+    m3u8?: string
+    title?: string
+    /** why live=false (not-live / invalid handle / challenge / parse failure) */
+    reason?: string
+  }
+  export interface TikTokLiveProbeOptions {
+    cookieString?: string
+    fetchPage?: (url: string, headers: Record<string, string>) => Promise<string>
+    timeoutMs?: number
+  }
+  export function probeTikTokLiveStatus(handle: string, options?: TikTokLiveProbeOptions): Promise<TikTokLiveProbeResult>
+  export function parseLiveRoomFromHtml(html: string): TikTokLiveProbeResult
+  export function pickHlsPullUrl(pullData: any): string | null
   export const Youtube: Record<string, unknown>
   export const Website: Record<string, unknown>
   export const Leap: Record<string, unknown>
