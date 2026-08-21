@@ -2,7 +2,7 @@ import type { Component } from '../core/types'
 
 export interface ApiControl {
   onStatus?: () => unknown
-  onReload?: () => Promise<unknown>
+  onReload?: (options?: { force?: boolean }) => Promise<unknown>
   /** read-only session-health view (cookie-keepalive overview), optional */
   onCookieHealth?: () => unknown
 }
@@ -29,7 +29,8 @@ export const apiComponent: Component<{ port?: number; secret?: string } & ApiCon
         }
         if (url.pathname === '/api/reload' && req.method === 'POST') {
           try {
-            return Response.json((await config.onReload?.()) ?? { ok: true })
+            const force = ['1', 'true'].includes(url.searchParams.get('force') ?? '')
+            return Response.json((await config.onReload?.({ force })) ?? { ok: true })
           } catch (error) {
             return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 })
           }

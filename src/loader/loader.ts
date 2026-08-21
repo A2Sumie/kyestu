@@ -44,9 +44,14 @@ export function nodeKey(id: string): string {
 }
 
 export interface ReconcileChange {
-  kind: 'create' | 'dispose' | 'rebuild' | 'disable' | 'enable'
+  kind: 'create' | 'dispose' | 'rebuild' | 'disable' | 'enable' | 'reset'
   id: string
-  reason?: 'use' | 'with' | 'needs'
+  reason?: 'use' | 'with' | 'needs' | 'failed'
+}
+
+export interface ReconcileOptions {
+  /** reset FAILED entries whose config is unchanged (manual re-entry; the lifecycle never re-enters FAILED on its own) */
+  force?: boolean
 }
 
 interface EntryState {
@@ -70,6 +75,7 @@ function sameKeys(a: Key[], b: Key[]): boolean {
 
 export class Loader {
   private entries = new Map<string, EntryState>()
+  private queue: Promise<unknown> = Promise.resolve()
 
   constructor(
     private root: Root,
@@ -88,7 +94,14 @@ export class Loader {
     return this.reconcile(defs)
   }
 
-  async reconcile(defs: EntryDef[]): Promise<ReconcileChange[]> {
+  /** serialized entry point: concurrent callers (watch, /api/reload) queue up instead of interleaving dispose/create */
+  async reconcile(defs: EntryDef[], options?: ReconcileOptions): Promise<ReconcileChange[]> {
+    const run = this.queue.then(() => this.reconcileNow(defs, options))
+    this.queue = run.catch(() => {})
+    return run
+  }
+
+  private async reconcileNow(defs: EntryDef[], options?: ReconcileOptions): Promise<ReconcileChange[]> {
     // validate everything before touching the running system
     const seen = new Set<string>()
     for (const def of defs) {
@@ -134,6 +147,9 @@ export class Loader {
           await current.fiber?.dispose()
           current.fiber = this.createFiber(def, inject)
           changes.push({ kind: 'rebuild', id: def.id, reason })
+        } else if (options?.force && current.fiber?.state === 'FAILED') {
+          current.fiber.reset()
+          changes.push({ kind: 'reset', id: def.id, reason: 'failed' })
         }
       }
       current.def = def

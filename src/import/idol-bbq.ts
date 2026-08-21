@@ -188,7 +188,9 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
   }
 
   if (old.api) components.push({ id: 'api', use: 'app/api', with: old.api })
-  if (old.live_capture) components.push({ id: 'live-capture', use: 'app/live-capture', with: old.live_capture })
+  // live_capture (two services + plan API) is not ported to kyestu; emitting an
+  // entry would fail loader validation with 'unknown component', so skip it
+  if (old.live_capture) warnings.push('live_capture: app/live-capture is not ported to kyestu; entry skipped')
 
   // kyestu infra services the app cannot start without; safe to edit after import
   components.unshift(

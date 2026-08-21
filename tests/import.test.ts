@@ -155,6 +155,12 @@ test('youtube crawlers with cookie_file generate an in-runtime cookie-keepalive 
   ])
 })
 
+test('live_capture is skipped with a warning instead of emitting an unregistered entry', () => {
+  const config = convertIdolBbqConfig({ live_capture: { port: 9000 } })
+  expect(config.components.some((c) => c.use === 'app/live-capture')).toBe(false)
+  expect((config as any).warnings!.some((w: string) => w.includes('live_capture'))).toBe(true)
+})
+
 test('Mechanical processors map to processor/rules instead of being dropped', () => {
   const config = convertIdolBbqConfig({
     processors: [

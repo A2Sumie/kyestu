@@ -32,7 +32,7 @@ async function main() {
   const registry = defineAll(createRegistry())
   const loader = new Loader(root, registry)
 
-  const boot = async () => {
+  const boot = async (force = false) => {
     const config = parseConfigYaml(readFileSync(configPath, 'utf8'))
     const entries = compileConfig(config)
     const present = new Set(entries.map((e) => e.id))
@@ -57,15 +57,15 @@ async function main() {
           const service = handle?.api<{ overview?: () => unknown }>()
           return service?.overview?.() ?? null
         },
-        onReload: async () => {
-          await boot()
+        onReload: async (options?: { force?: boolean }) => {
+          await boot(options?.force)
           return { ok: true }
         },
       },
     }
     const routerEntry: EntryDef = { id: 'router', use: 'app/router', with: { routes: config.routes ?? [] } }
     const all = [...infra, ...resolved.filter((e) => e.id !== 'api' && e.id !== 'router'), apiEntry, routerEntry]
-    const changes = await loader.reconcile(all)
+    const changes = await loader.reconcile(all, { force })
     if (changes.length) console.log('[kyestu] reconciled:', changes.map((c) => `${c.kind}:${c.id}`).join(', '))
   }
 

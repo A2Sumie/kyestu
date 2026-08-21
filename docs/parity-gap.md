@@ -25,11 +25,11 @@
 - QQ 发送仅 2 次内联重试（生产 60s·2ⁿ 退避）
 - digest_buffer 纯内存（生产 DB 持久化）
 - sendVideo 不走 TargetRuntime 策略
-- POST /api/reload 与 watch 并发未串行化
+- ~~POST /api/reload 与 watch 并发未串行化~~ ✅ 已解（2026-08-21）：Loader.reconcile 入口 promise-chain 串行化，后到者排队不交错；FAILED entry 经 POST /api/reload?force=1 显式复位（默认行为不变，watch 永不自动重试 FAILED）
 
 ## 待部署实测
 - 真实平台抓取/发送（cookie、风控、真实 OneBot/B站）
 - live relay 对 tv.n2nj.moe 播放器 API 面校准
 - biliup LLM 标题/标签生成（当前只有确定性模板）
-- live_capture 两服务 + plan API（未移植）
+- live_capture 两服务 + plan API（未移植；导入器对 live_capture 配置跳过并 warning，不再产出未注册 entry）
 - API 面：生产 ~45 端点，kyestu 只有 /api/status + /api/reload，按需补
