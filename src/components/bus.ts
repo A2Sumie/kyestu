@@ -18,9 +18,11 @@ export interface LiveEvent {
 }
 
 /**
- * Session health transitions (cookie-keepalive publishes; future QQ alerting
- * consumes). fresh->broken must be observable out-of-band: the 8-17 lesson
- * was cookie 409s sitting unseen in a state field for two days.
+ * Session health events (cookie-keepalive publishes; it also consumes
+ * transition->fresh to re-arm quarantined jobs, and logs escalations to the
+ * process console). fresh->broken must be observable out-of-band: the 8-17
+ * lesson was cookie 409s sitting unseen in a state field for two days.
+ * Semantics: docs/bus.md.
  */
 export type SessionBusEvent =
   | { kind: 'transition'; key: string; from: string; to: string; detail?: string }

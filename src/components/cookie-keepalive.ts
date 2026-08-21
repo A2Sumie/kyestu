@@ -516,6 +516,20 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
         }
       })
 
+      // the 8-17 lesson made observable: escalation to broken/quarantined and
+      // jar-expiring events must surface on the process log even before any
+      // external alerting consumer exists (channel contract: docs/bus.md)
+      const offLog = bus.on('session', (event) => {
+        if (event.kind === 'transition') {
+          const line = `[cookie-keepalive] session ${event.from} -> ${event.to}: ${event.key}${event.detail ? ` (${event.detail})` : ''}`
+          if (event.to === 'broken' || event.to === 'quarantined') console.warn(line)
+          else console.log(line)
+        } else {
+          const remaining = event.minRemainingSeconds === null ? 'unknown' : `${Math.floor(event.minRemainingSeconds / 3600)}h`
+          console.warn(`[cookie-keepalive] session jar expiring: ${event.key} (${event.cookies} cookies, min remaining ${remaining})`)
+        }
+      })
+
       // auto-resume window: guard() is what lifts an expired quarantine
       // (maybeAutoResume); a slow ticker pings it so quarantined jobs with
       // resume_after_seconds come back without any external poke
@@ -533,6 +547,7 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
         service.armedTimers = 0
         clearInterval(resumeTicker)
         offBus()
+        offLog()
       }
     })
   },

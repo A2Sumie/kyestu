@@ -288,7 +288,7 @@ export class Root {
   }
 
   reportTaint(fiber: Fiber | null, phase: 'inverse' | 'guard' | 'apply' | 'listener', error: unknown): void {
-    fiber?.taints.push({ phase, error })
+    fiber?.taints.push({ phase, error, at: Date.now() })
     this.emitter.emit({ type: 'taint', fiber: fiber?.name ?? 'root', phase, error })
   }
 
@@ -320,7 +320,7 @@ export class Fiber {
   readonly config: unknown
   readonly children = new Set<Fiber>()
   readonly ctx: Context
-  readonly taints: Array<{ phase: string; error: unknown }> = []
+  readonly taints: Array<{ phase: string; error: unknown; at: number }> = []
 
   state: LifecycleState = 'INACTIVE'
   retired = false
@@ -499,7 +499,7 @@ export class Fiber {
       if (remaining <= 0) {
         const waiting = blocking.map((fiber) => fiber.name)
         this.root.emitter.emit({ type: 'timeout', fiber: this.name, waiting })
-        this.taints.push({ phase: 'guard', error: new Error(`unload guard timeout, forced; dependents: ${waiting.join(', ')}`) })
+        this.taints.push({ phase: 'guard', error: new Error(`unload guard timeout, forced; dependents: ${waiting.join(', ')}`), at: Date.now() })
         return
       }
       await Promise.race([...blocking.map((fiber) => fiber.nextStateChange()), sleep(Math.min(25, remaining))])

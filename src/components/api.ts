@@ -1,7 +1,55 @@
 import type { Component } from '../core/types'
+import type { Root } from '../core/runtime'
+
+export interface StatusFiberView {
+  name: string
+  state: string
+  uid: string
+  /** recorded recovery faults (inverse/guard/apply/listener), oldest first */
+  taints: Array<{ phase: string; message: string; at: number }>
+  /** apply-failure error message; present only while state === 'FAILED' */
+  outcome?: string
+  /** recovery escape hatch; present only while state === 'FAILED' */
+  hint?: string
+}
+
+export interface StatusView {
+  entries: number
+  fibers: StatusFiberView[]
+}
+
+/**
+ * /api/status payload. Beyond name/state/uid this surfaces each fiber's
+ * taints and (for FAILED fibers) the apply-failure outcome — otherwise a
+ * permanently muted fiber is invisible in production (review §2.5/§3.3).
+ * The hint points at the force-reload escape hatch instead of adding a
+ * dedicated reset endpoint.
+ */
+export function statusView(root: Root, entries: number): StatusView {
+  return {
+    entries,
+    fibers: [...root.fibers].map((fiber) => {
+      const view: StatusFiberView = {
+        name: fiber.name,
+        state: fiber.state,
+        uid: fiber.uid,
+        taints: fiber.taints.map((taint) => ({
+          phase: taint.phase,
+          message: taint.error instanceof Error ? taint.error.message : String(taint.error),
+          at: taint.at,
+        })),
+      }
+      if (fiber.state === 'FAILED') {
+        view.outcome = fiber.outcome instanceof Error ? fiber.outcome.message : String(fiber.outcome)
+        view.hint = 'recover with POST /api/reload?force=1 (resets FAILED fibers in place)'
+      }
+      return view
+    }),
+  }
+}
 
 export interface ApiControl {
-  onStatus?: () => unknown
+  onStatus?: () => StatusView
   onReload?: (options?: { force?: boolean }) => Promise<unknown>
   /** read-only session-health view (cookie-keepalive overview), optional */
   onCookieHealth?: () => unknown

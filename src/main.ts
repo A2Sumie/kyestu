@@ -6,6 +6,8 @@ import { parseConfigYaml } from './config/yaml'
 import { compileConfig } from './config/schema'
 import { defineAll } from './components'
 import { resolveEnvStrings } from './config/env'
+import { statusView } from './components/api'
+import type { KyestuEvent } from './core/types'
 
 const configPath = process.argv[2] ?? process.env.KYESTU_CONFIG ?? 'kyestu.config.yaml'
 
@@ -27,8 +29,21 @@ const INFRA_DEFAULTS: EntryDef[] = [
   { id: 'browser-pool', use: 'infra/browser-pool', with: { cache_root: process.env.CACHE_DIR ?? './cache' } },
 ]
 
+// runtime event stream (D2): lifecycle transitions at info level; taints and
+// unload-guard timeouts must be loud — they are the only production visibility
+// into recovery faults and forced unloads (review §2.5)
+function logRuntimeEvent(event: KyestuEvent): void {
+  if (event.type === 'taint') {
+    console.warn(`[kyestu] taint: ${event.fiber} (${event.phase}):`, event.error)
+  } else if (event.type === 'timeout') {
+    console.error(`[kyestu] unload guard timeout: ${event.fiber} forced, waiting on ${event.waiting.join(', ')}`)
+  } else {
+    console.log(`[kyestu] lifecycle: ${event.fiber} ${event.from} -> ${event.to}`)
+  }
+}
+
 async function main() {
-  const root: Root = createRoot({ name: 'kyestu' })
+  const root: Root = createRoot({ name: 'kyestu', onEvent: logRuntimeEvent })
   const registry = defineAll(createRegistry())
   const loader = new Loader(root, registry)
 
@@ -46,10 +61,7 @@ async function main() {
         ...(userApi?.with ?? {}),
         port: userApi?.with?.port ?? Number(process.env.KYESTU_API_PORT ?? 3000),
         secret: userApi?.with?.secret ?? process.env.KYESTU_API_SECRET,
-        onStatus: () => ({
-          entries: loader.current().length,
-          fibers: [...root.fibers].map((f) => ({ name: f.name, state: f.state, uid: f.uid })),
-        }),
+        onStatus: () => statusView(root, loader.current().length),
         // read-only cookie-health view: resolved lazily per request so the
         // api entry does not need an explicit coeffect edge on keepalive
         onCookieHealth: () => {
