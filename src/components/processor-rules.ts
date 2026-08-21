@@ -35,6 +35,22 @@ function stripMeta(config: RulesProcessorConfig): RulesOptions {
 }
 
 export const rulesProcessorComponent: Component<RulesProcessorConfig> = {
+  // meta keys + the DigestRules option surface (stripMeta forwards everything
+  // else into DigestRules, so its options are legitimate top-level keys)
+  knownWithKeys: [
+    'action',
+    'name',
+    'extended_payload',
+    'merge_window_minutes',
+    'merge_window_seconds',
+    'group_by_user',
+    'group_by_platform',
+    'min_group_size',
+    'include_source_url',
+    'url_allow_patterns',
+    'url_block_patterns',
+    'max_results',
+  ],
   apply: (ctx, config) => {
     ctx.expose(new RulesProcessorClient(config))
   },

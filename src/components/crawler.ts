@@ -10,7 +10,7 @@ import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus } from './bus'
 import type { BrowserSessionPool } from './browser-pool'
 import type { SessionHealthBoard } from '../pipeline/session-health'
-import type { ProcessorApi } from './llm-openai'
+import type { ProcessorApi } from '../types/api'
 
 export interface CrawlResult {
   platform: number
@@ -91,8 +91,31 @@ function buildUrls(config: Record<string, any>): string[] {
 
 const DEFAULT_INTERVAL_SECONDS = 5 * 60
 
+/**
+ * `with` keys this component consumes. Includes the spider pass-through
+ * surface: the whole config is forwarded to `spider.crawl()` (defaultDriver),
+ * so spider-level keys are legitimate here even though this file never reads
+ * them. The scheduling keys are consumed by pipeline/schedule.
+ */
+const CRAWLER_KNOWN_WITH_KEYS = [
+  // target selection / scheduling (this component + pipeline/schedule)
+  'websites', 'origin', 'paths', 'schedule', 'hot_schedule', 'cron', 'timezone',
+  // session / browser routing
+  'cookie_file', 'session_profile', 'browser_mode', 'device_profile',
+  'extra_headers', 'user_agent', 'locale', 'viewport',
+  // processing hooks
+  'post_processors', 'live_relay', 'interval_time',
+  // spider pass-through (read inside @kyestu/spider's crawl)
+  'task_type', 'sub_task_type', 'crawl_engine', 'cookieString', 'requestHeaders',
+  'feed', 'label', 'u_id', 'timeout', 'wantHighlights', 'highlightsTimeoutMs',
+  'max_list_pages', 'max_detail_count', 'detail_interval_time', 'block_resource_types',
+  'hydrate_users', 'hydrate_limit', 'hydrate_concurrency', 'hydrate_interval_time',
+  'isArticleKnown', 'articleStateLookup', 'articlePrefixStateLookup', 'isStoredPremierePending',
+]
+
 export function makeCrawlerComponent(kind: string): Component<Record<string, any>> {
   return {
+    knownWithKeys: CRAWLER_KNOWN_WITH_KEYS,
     // 'cookie-health' is deliberately NOT a declared coeffect here: session
     // gating is opt-in per config (BRIEF 2c "no session_profile/cookie_file
     // → does not participate"), and legacy configs without a cookie-keepalive

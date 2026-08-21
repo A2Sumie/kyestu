@@ -20,7 +20,7 @@ components:
     with:
       websites: ['https://x.com/your_account']
       cookie_file: cookies/x.txt # Netscape 格式导出
-      interval_seconds: 300
+      # 调度用 schedule / hot_schedule / cron 键（crawler 默认每 5 分钟一轮，无需配置）
 
   # 翻译（可整段删除，同时删掉 routes 里最后一条）
   - id: ja-zh

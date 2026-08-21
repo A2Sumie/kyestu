@@ -108,7 +108,18 @@ export class Loader {
       if (!def.id) throw new Error('entry requires an id')
       if (seen.has(def.id)) throw new Error(`duplicate entry id: ${def.id}`)
       seen.add(def.id)
-      if (!this.registry.has(def.use)) throw new Error(`unknown component '${def.use}' (entry '${def.id}')`)
+      const componentDef = this.registry.get(def.use)
+      if (!componentDef) throw new Error(`unknown component '${def.use}' (entry '${def.id}')`)
+      // unknown-key warning: alert on typos / dead keys, never reject (compat)
+      if (componentDef.knownWithKeys) {
+        const known = new Set(componentDef.knownWithKeys)
+        const unknown = Object.keys(def.with ?? {}).filter((key) => !known.has(key))
+        if (unknown.length) {
+          console.warn(
+            `[loader] entry '${def.id}' (${def.use}): unknown config key(s) ${unknown.map((k) => `'${k}'`).join(', ')} — not consumed by the component, silently running on defaults`,
+          )
+        }
+      }
     }
 
     const changes: ReconcileChange[] = []

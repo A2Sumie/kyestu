@@ -422,6 +422,7 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
   // Satisfaction (Def 24 predicate σ ⊧ d) gates activation; notify (Def 26)
   // reloads this fiber when the browser provider fiber changes identity.
   inject: ['db', 'bus', 'browser'],
+  knownWithKeys: ['jobs', 'broken_threshold', 'resume_after_seconds', 'expiring_threshold_seconds', 'stagger_max_ms'],
   apply: (ctx, config) => {
     const db = ctx.get<KyestuDb>('db')!
     const browser = ctx.get<BrowserSessionPool>('browser') ?? null
@@ -455,6 +456,10 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
       board,
       bus,
       staggerMaxMs: config.stagger_max_ms ?? DEFAULT_STAGGER_MAX_MS,
+    }, {
+      // wire the declared config key through — it was accepted by the config
+      // interface but never reached the ExpiringLatch (dead key, review §5.2-2)
+      expiring_threshold_seconds: config.expiring_threshold_seconds,
     })
     ctx.expose(service)
 

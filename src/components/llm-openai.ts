@@ -2,6 +2,7 @@ import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { writeSchedulesFromProcessorResult } from '../pipeline/schedule-webhook'
 import { ServiceStateStore, llmCircuitStore } from '../pipeline/service-state'
+import type { ProcessContext, ProcessorApi } from '../types/api'
 
 /**
  * OpenAI-protocol LLM processor (`processor/openai`).
@@ -74,11 +75,6 @@ export interface ProviderStatus {
   last_probe: { ok: boolean; latency_ms: number; error: string | null; at: number } | null
 }
 
-export interface ProcessContext {
-  sourceRef?: string
-  minConfidence?: number
-}
-
 export interface PersistedCircuit {
   consecutiveFailures: number
   /** absolute open-until timestamp (ms); an expired open never revives the circuit */
@@ -99,9 +95,9 @@ export interface OpenAiProcessorClientOptions {
   fallbackStore?: CircuitStore
 }
 
-export interface ProcessorApi {
-  process: (text: string, context?: ProcessContext) => Promise<string>
-}
+// canonical home of the processor contract is types/api; re-exported here so
+// existing import sites keep working
+export type { ProcessContext, ProcessorApi } from '../types/api'
 
 function resolveApiKey(raw: string | undefined, env: Record<string, string | undefined> = process.env): string {
   if (!raw) return ''
@@ -369,6 +365,30 @@ export const openAiProcessorComponent: Component<OpenAiProcessorConfig> = {
   // (main.ts INFRA_DEFAULTS, all tests/examples), so this is a hard
   // dependency, not an opt-in read like the crawler's cookie-health board
   inject: ['db'],
+  knownWithKeys: [
+    'api_key',
+    'base_url',
+    'model_id',
+    'wire_api',
+    'name',
+    'action',
+    'prompt',
+    'prompt_assets',
+    'temperature',
+    'top_p',
+    'max_tokens',
+    'response_format',
+    'extended_payload',
+    'reasoning_effort',
+    'request_timeout_ms',
+    'circuit',
+    'schedule_url',
+    'schedule_api_key',
+    'schedule_user_agent',
+    'schedule_waf_bypass_header',
+    'min_confidence',
+    'fallback',
+  ],
   apply: (ctx, config) => {
     const db = ctx.get<KyestuDb>('db')!
     const entryId = String((config as OpenAiProcessorConfig & { __id?: unknown }).__id ?? 'processor')

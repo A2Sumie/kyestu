@@ -82,6 +82,7 @@ export class OneBotClient {
 }
 
 export const onebotComponent: Component<OneBotClientConfig> = {
+  knownWithKeys: ['http_url', 'access_token', 'timeout_ms'],
   apply: (ctx, config) => {
     const client = new OneBotClient(config)
     ctx.expose(client)

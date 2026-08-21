@@ -14,7 +14,8 @@ export interface LivePlayerTarget {
   auth_username?: string
   auth_password?: string
   waf_bypass_header?: string
-  sync_interval_seconds?: number
+  // note: no sync_interval_seconds — sync is event-driven (bus 'live'), there
+  // is no polling loop for an interval to drive (dead key removed, §5.2-2)
 }
 
 export interface LivePlayerConfig {
@@ -51,6 +52,7 @@ export class LivePlayerClient {
 
 export const livePlayerComponent: Component<LivePlayerConfig> = {
   inject: ['bus'],
+  knownWithKeys: ['targets'],
   apply: (ctx, config) => {
     const bus = ctx.get<Bus>('bus')!
     const client = new LivePlayerClient(config.targets ?? {})

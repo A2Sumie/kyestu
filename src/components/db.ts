@@ -57,6 +57,7 @@ export class KyestuDb {
 export const defaultMigrationsDir = fileURLToPath(new URL('../../assets/migrations', import.meta.url))
 
 export const dbComponent: Component<{ path?: string; migrations_dir?: string }> = {
+  knownWithKeys: ['path', 'migrations_dir'],
   apply: (ctx, config) => {
     const db = new KyestuDb(config.path ?? ':memory:')
     db.migrate(config.migrations_dir ?? defaultMigrationsDir)

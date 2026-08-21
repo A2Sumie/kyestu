@@ -60,6 +60,8 @@ export class Bus {
 }
 
 export const busComponent: Component = {
+  // the bus takes no config at all
+  knownWithKeys: [],
   apply: (ctx) => {
     ctx.set('bus', new Bus())
   },

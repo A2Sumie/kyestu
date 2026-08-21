@@ -6,8 +6,7 @@ import { Aggregator, type AggregationConfig } from '../pipeline/aggregation'
 import { MediaVisibility, applyTextPolicies, gateByAge, gateByKeywords, type TargetPolicyConfig } from '../pipeline/policies'
 import { VideoPairings } from '../pipeline/pairing'
 import { buildSummaryArticle, renderSummaryCard, type SummaryItem } from '../pipeline/summary-card'
-import type { RenderedPayload } from '../components/formatter'
-import type { SendInput } from '../components/target-qq'
+import type { RenderedPayload, SendInput } from '../types/api'
 
 /**
  * Shared target send path: policies -> aggregation routing -> raw send.
@@ -18,6 +17,17 @@ export interface TargetRuntimeConfig extends TargetPolicyConfig {
   digest_threshold?: number
   summary_card?: AggregationConfig | boolean
 }
+
+/** `with` keys consumed by TargetRuntime (policies + aggregation); each target component lists its own superset */
+export const TARGET_RUNTIME_KNOWN_WITH_KEYS = [
+  'digest_threshold',
+  'summary_card',
+  'block_until',
+  'blocked_keywords',
+  'allowed_keywords',
+  'replace_regex',
+  'media_visibility',
+]
 
 export interface PersistedDigestItem {
   input: SendInput

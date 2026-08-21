@@ -47,6 +47,7 @@ routes:
 - duplicate id / 缺 id 缺 use / 未注册组件类型
 - route 引用未知组件、自环
 - needs 图有环（报出环路径）
+- `with` unknown-key 告警：组件在 `Component.knownWithKeys` 里声明自己消费的键；多出来的键在加载前 `console.warn`（告警不拒绝，保持兼容）——拼错的键不再静默吃默认值
 
 ## Reconcile 行为
 

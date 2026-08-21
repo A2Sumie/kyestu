@@ -6,8 +6,7 @@ import { OutboundStore } from '../pipeline/outbound'
 import { ServiceStateStore, routerQueueStore } from '../pipeline/service-state'
 import { NodeHandle, nodeKey } from '../loader/loader'
 import type { Bus, ArticleEvent } from './bus'
-import type { FormatterApi } from './formatter'
-import type { TargetApi } from './target-qq'
+import type { FormatterApi, TargetApi } from '../types/api'
 
 /** persistent backing for the pending queue (service_state); memory stays the runtime master copy */
 export interface RouterQueueStore {
@@ -27,6 +26,7 @@ const MAX_QUEUE_DEFERS = 60
 /** drives crawler -> formatter -> target flows for every new article */
 export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms?: number }> = {
   inject: ['bus', 'db'],
+  knownWithKeys: ['routes', 'retry_interval_ms'],
   apply: (ctx, config) => {
     const bus = ctx.get<Bus>('bus')!
     const db = ctx.get<KyestuDb>('db')!

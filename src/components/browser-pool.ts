@@ -298,6 +298,7 @@ export class BrowserSessionPool {
 }
 
 export const browserPoolComponent: Component<{ cache_root?: string }> = {
+  knownWithKeys: ['cache_root'],
   apply: (ctx, config) => {
     const pool = new BrowserSessionPool({ cacheRoot: config.cache_root })
     ctx.set('browser', pool)

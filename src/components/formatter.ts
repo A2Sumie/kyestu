@@ -2,24 +2,13 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import type { Component } from '../core/types'
 import type { MediaStore } from '../pipeline/media'
+import type { FormatterApi, RenderedMedia } from '../types/api'
+
+// canonical home of the formatter contract is types/api; re-exported here so
+// existing import sites keep working
+export type { FormatterApi, RenderedMedia, RenderedPayload } from '../types/api'
 
 process.env.FONTS_DIR ||= fileURLToPath(new URL('../../assets/fonts', import.meta.url))
-
-export interface RenderedMedia {
-  path: string
-  type: 'photo' | 'video'
-  content_hash?: string
-}
-
-export interface RenderedPayload {
-  text: string
-  media: RenderedMedia[]
-}
-
-export interface FormatterApi {
-  renderType: string
-  render: (article: any) => Promise<RenderedPayload>
-}
 
 const VIDEO_RENDER_FALLBACK = new Set(['img-tag', 'img-tag-dynamic'])
 // production exempts the whole platform (TikTok/YouTube) for img/img-with-meta,
@@ -65,6 +54,8 @@ async function renderCard(article: any, mediaStore: MediaStore | null): Promise<
 export function makeFormatterComponent(renderType: string): Component<Record<string, any>> {
   return {
     inject: ['media-store'],
+    // formatter takes no config: everything is derived from the render type
+    knownWithKeys: [],
     apply: (ctx, config) => {
       const mediaStore = ctx.get<MediaStore>('media-store') ?? null
       const api: FormatterApi = {

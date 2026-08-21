@@ -3,12 +3,11 @@ import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { articleKey, outboundKey, OutboundStore } from '../pipeline/outbound'
 import { registerBilibiliRecoveryTarget } from '../pipeline/bilibili-reconcile'
-import { TargetRuntime } from '../pipeline/target-runtime'
+import { TargetRuntime, TARGET_RUNTIME_KNOWN_WITH_KEYS } from '../pipeline/target-runtime'
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
 import { ShortVideoDedup } from '../pipeline/short-video-dedup'
 import { uploadVideo } from '../pipeline/biliup'
-import type { SendInput, TargetApi } from './target-qq'
-import type { RenderedPayload } from './formatter'
+import type { RenderedPayload, SendInput, TargetApi } from '../types/api'
 
 /** Bilibili target: text/photo dynamics + video upload (biliup) with X-teaser pairing. */
 
@@ -123,6 +122,20 @@ export class BilibiliClient {
 
 export const bilibiliTargetComponent: Component<Record<string, any>> = {
   inject: ['db'],
+  knownWithKeys: [
+    'cookie_file',
+    'sessdata',
+    'bili_jct',
+    'endpoints',
+    'min_interval',
+    'timezone',
+    'video_pairing',
+    'video_upload',
+    'reconcile_on_recovery',
+    'suppress_media_uids',
+    'suppress_members_only_media',
+    ...TARGET_RUNTIME_KNOWN_WITH_KEYS,
+  ],
   apply: (ctx, config) => {
     const db = ctx.get<KyestuDb>('db')!
     const outbound = new OutboundStore(db)

@@ -56,6 +56,7 @@ export interface ApiControl {
 }
 
 export const apiComponent: Component<{ port?: number; secret?: string } & ApiControl> = {
+  knownWithKeys: ['port', 'secret', 'onStatus', 'onReload', 'onCookieHealth'],
   apply: (ctx, config) => {
     const port = config.port ?? 3000
     const secret = config.secret

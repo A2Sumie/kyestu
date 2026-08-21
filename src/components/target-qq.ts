@@ -2,32 +2,18 @@ import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { articleKey, outboundKey, OutboundStore } from '../pipeline/outbound'
 import { OneBotClient, OneBotNonRetryableError, type OneBotMessageSegment } from './onebot'
-import { TargetRuntime } from '../pipeline/target-runtime'
-import type { RenderedPayload } from './formatter'
+import { TargetRuntime, TARGET_RUNTIME_KNOWN_WITH_KEYS } from '../pipeline/target-runtime'
+import type { RenderedPayload, SendInput, TargetApi } from '../types/api'
 
-export interface SendInput {
-  article: {
-    platform: string
-    a_id: string
-    id?: number
-    u_id?: string
-    created_at?: number
-    content?: string | null
-    translation?: string | null
-    extra?: unknown
-  }
-  rendered: RenderedPayload
-  route: { crawler: string; formatter?: string | null; target: string }
-}
-
-export interface TargetApi {
-  send: (input: SendInput) => Promise<void>
-}
+// canonical home of the target contract is types/api; re-exported here so
+// existing import sites keep working
+export type { SendInput, TargetApi } from '../types/api'
 
 const CHUNK = 10
 
 export const qqTargetComponent: Component<Record<string, any>> = {
   inject: ['onebot', 'db'],
+  knownWithKeys: ['group_id', 'min_interval', ...TARGET_RUNTIME_KNOWN_WITH_KEYS],
   apply: (ctx, config) => {
     const client = ctx.get<OneBotClient>('onebot')!
     const db = ctx.get<KyestuDb>('db')!
