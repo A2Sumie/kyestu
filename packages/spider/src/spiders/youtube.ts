@@ -237,6 +237,19 @@ namespace YoutubeApiJsonParser {
         return handle.replace(/^@/, '')
     }
 
+    // microformat ownerProfileUrl percent-encodes non-ASCII handles
+    // (e.g. /@YouTube%E3%83%99%E3%83%AB...); decode so u_id stays a usable identity.
+    function decodeHandle(value?: string | null): string | null {
+        if (!value) {
+            return null
+        }
+        try {
+            return decodeURIComponent(value)
+        } catch {
+            return value
+        }
+    }
+
     function addLocaleQuery(url: string): string {
         const _url = new URL(url)
         _url.searchParams.set('hl', 'en')
@@ -652,7 +665,7 @@ namespace YoutubeApiJsonParser {
             thumbnail,
             is_premiere_pending,
             scheduled_start_at,
-            owner_handle: ownerHandleMatch?.[1] || null,
+            owner_handle: decodeHandle(ownerHandleMatch?.[1]),
             owner_name: microformat?.ownerChannelName || null,
             members_only,
         }

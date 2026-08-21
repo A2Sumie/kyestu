@@ -956,3 +956,19 @@ test('YouTube registry extractBasicInfo resolves single-video URLs and channel h
         platform: Platform.YouTube,
     })
 })
+
+test('YouTube detailParser decodes percent-encoded owner handles', () => {
+    const detailHtml = `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+        videoDetails: { title: 'radio free part' },
+        microformat: {
+            playerMicroformatRenderer: {
+                publishDate: '2026-07-19',
+                ownerProfileUrl: 'http://www.youtube.com/@YouTube%E3%83%99%E3%83%AB%E3%82%AC%E3%83%A2%E3%83%81%E3%83%A3%E3%83%B3%E3%83%8D%E3%83%AB',
+                ownerChannelName: 'Bergamo Radio YT Channel',
+            },
+        },
+    })};</script>`
+    const detail = YoutubeApiJsonParser.detailParser(detailHtml)
+    expect(detail.owner_handle).toBe('YouTubeベルガモチャンネル')
+    expect(detail.members_only).toBe(false)
+})
