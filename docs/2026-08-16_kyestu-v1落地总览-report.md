@@ -1,7 +1,7 @@
 # kyestu v1 落地总览报告
 
 - **日期**：2026-08-16
-- **项目**：`kyestu/`（本地 git 仓，五个 commit）
+- **项目**：`kyestu/`（本地 git 仓；**时点快照**：写下时为 5 个 commit，后续演进以 `git log` 为准）
 - **性质**：idol-bbq 的 Cordis 化重构继任项目——以时空可组合性 runtime 为底座，复刻 SNS 抓取转发系统
 - **验证**：248 测试全绿 + tsc clean + 生产配置启动冒烟通过
 
@@ -104,8 +104,8 @@ bun src/main.ts kyestu.config.yaml
 | 摘要卡 | 同款模板渲染 ✅ |
 | tag-storm digest | 检测已实现，未接发送链路（按要求） |
 | live relay | beta：API 面需对 tv.n2nj.moe 实测校准 |
-| cookie 保活 cron | 运维侧，不进运行时 |
-| showroom 排程抽取 | 未做 |
+| cookie 保活 cron | ~~运维侧，不进运行时~~（勘误 2026-08-21：同日已被 D10 推翻，收编为运行时组件 `app/cookie-keepalive`） |
+| showroom 排程抽取 | 未做（勘误 2026-08-21：本条指独立的排程抽取功能；与之相关但不同的 **schedule-webhook 回写**已落地，见 D13 与 parity-gap #2） |
 | outbound key 格式 | kyestu 原生（schema 相同）；直接挂生产 DB 做影子需注意去重键不连续 |
 | 重冒烟/平台实测 | 留给部署侧（cookie、风控参数、真实 OneBot/B站） |
 
@@ -124,6 +124,6 @@ packages/        vendored log/utils/spider/render（@kyestu/*）
 assets/          fonts（OFL）+ migrations（生产 DDL）
 scripts/         import-idol-bbq.ts + biliup-upload.py
 tests/           248 用例
-docs/            可行性报告 / 决策记录 D1-D6 / 配置指南 / 本报告
+docs/            可行性报告 / 决策记录 D1-D15（截至本报告日期；现持续增长，见 decisions.md）/ 配置指南 / 本报告
 testset/         parity + conformance 用例集（82 条）
 ```
