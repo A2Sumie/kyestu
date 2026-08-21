@@ -629,10 +629,21 @@ class XListSpider extends BaseSpider {
         const normalizedEngine = config.crawl_engine === 'api-graphql' ? 'browser' : config.crawl_engine
         const fetchTweets =
             !sub_task_type || sub_task_type.length === 0 || sub_task_type.includes(XTweetsTaskType.tweets)
-        const fetchReplies =
+        // List timelines only surface member tweets/retweets; replies are exclusively
+        // reachable via per-account crawlers (UserTweetsAndReplies / with_replies).
+        // Force replies off on every list engine even when the config still declares
+        // sub_task_type 'replies' (which previously caused per-member
+        // UserTweetsAndReplies hydration and mass 404 noise).
+        const declaresReplies =
             !sub_task_type || sub_task_type.length === 0 || sub_task_type.includes(XTweetsTaskType.replies)
+        const fetchReplies = false
         if (task_type === 'article') {
             this.log?.info(`Trying to grab tweets for ${id}.`)
+            if (declaresReplies) {
+                this.log?.warn(
+                    `List crawlers do not support replies; ignoring sub_task_type '${XTweetsTaskType.replies}' for list ${id} (use a per-account crawler to fetch replies).`,
+                )
+            }
             let res = [] as Array<GenericArticle<Platform.X>>
             if (normalizedEngine === 'api-statuses') {
                 this.log?.warn('Replies are not supported in api-statuses mode for now.')
@@ -655,9 +666,6 @@ class XListSpider extends BaseSpider {
             } else {
                 if (config.crawl_engine === 'api-graphql') {
                     this.log?.warn('api-graphql is treated as a legacy alias for browser-assisted list graphql mode')
-                }
-                if (fetchReplies) {
-                    this.log?.warn('Replies are not supported in browser-assisted list graphql mode for now.')
                 }
                 this.log?.debug('Using browser-assisted graphql list engine')
                 res = fetchTweets ? await graphqlClient.grabTweetsFromList(id, cookie_string) : []

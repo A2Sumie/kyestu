@@ -833,6 +833,72 @@ test('X unified list hydration coverage lookup tolerates @ prefixes and casing',
     expect(grabTweetsCalls).toBe(0)
 })
 
+test('X list crawl ignores declared replies and never calls grabReplies', async () => {
+    const warnMessages: Array<string> = []
+    const fakeLog = {
+        child: () => fakeLog,
+        info: () => undefined,
+        debug: () => undefined,
+        error: () => undefined,
+        warn: (message: string) => {
+            warnMessages.push(String(message))
+        },
+    }
+    const spider = new X.XListSpider(fakeLog as any)
+
+    let grabRepliesCalls = 0
+    let grabTweetsCalls = 0
+    let prepareNeedReplies: boolean | undefined
+    const prototype = X.XApiClient.prototype as any
+    const original = {
+        grabTweetsFromList: prototype.grabTweetsFromList,
+        grabFollowsFromList: prototype.grabFollowsFromList,
+        getSampledListUsers: prototype.getSampledListUsers,
+        prepareUserOperations: prototype.prepareUserOperations,
+        grabTweets: prototype.grabTweets,
+        grabReplies: prototype.grabReplies,
+    }
+    try {
+        prototype.grabTweetsFromList = async () => []
+        prototype.grabFollowsFromList = async () => [{ u_id: 'member1', rest_id: '1001' }]
+        prototype.getSampledListUsers = () => []
+        prototype.prepareUserOperations = async (_userId: string, opts: { needReplies?: boolean }) => {
+            prepareNeedReplies = opts?.needReplies
+        }
+        prototype.grabTweets = async () => {
+            grabTweetsCalls += 1
+            return []
+        }
+        prototype.grabReplies = async () => {
+            grabRepliesCalls += 1
+            return []
+        }
+
+        const articles = await spider.crawl('https://x.com/i/lists/1234567890', undefined, 'list-no-replies', {
+            task_type: 'article',
+            crawl_engine: 'api-unified',
+            sub_task_type: ['tweets', 'replies'],
+            cookieString: 'auth_token=token',
+        })
+
+        // List crawlers never fetch replies, even when config declares them.
+        expect(grabRepliesCalls).toBe(0)
+        expect(prepareNeedReplies).toBe(false)
+        // Tweets hydration is unaffected.
+        expect(grabTweetsCalls).toBe(1)
+        // Exactly one ignore-warn per crawl round.
+        expect(warnMessages.filter((message) => message.includes('do not support replies'))).toHaveLength(1)
+        expect(articles).toEqual([])
+    } finally {
+        prototype.grabTweetsFromList = original.grabTweetsFromList
+        prototype.grabFollowsFromList = original.grabFollowsFromList
+        prototype.getSampledListUsers = original.getSampledListUsers
+        prototype.prepareUserOperations = original.prepareUserOperations
+        prototype.grabTweets = original.grabTweets
+        prototype.grabReplies = original.grabReplies
+    }
+})
+
 test('assertXResponseOk passes through a 2xx response without throwing', () => {
     expect(() => assertXResponseOk({ ok: true, status: 200, statusText: 'OK' } as Response, 'tweets')).not.toThrow()
 })
