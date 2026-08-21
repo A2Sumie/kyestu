@@ -5,6 +5,7 @@
 
 export type CrawlErrorClass =
   | 'auth'
+  | 'challenge'
   | 'rate_limit'
   | 'timeout'
   | 'transient'
@@ -15,6 +16,11 @@ export type CrawlErrorClass =
 
 const RISK_COOLDOWN_MS: Record<CrawlErrorClass, number> = {
   auth: 30 * 60 * 1000,
+  // Environment-drift challenge (X account/access, /i/bouncer/): the cookie is
+  // usually still valid from the original IP/UA/device profile, so this cools
+  // the target without the auth path's credential-death semantics. Recovery
+  // should restore the original environment rather than rotate cookies.
+  challenge: 30 * 60 * 1000,
   rate_limit: 20 * 60 * 1000,
   timeout: 0,
   transient: 0,
@@ -30,7 +36,7 @@ const IG_OVERRIDES: Partial<Record<CrawlErrorClass, number>> = {
   auth: 6 * 60 * 60 * 1000,
 }
 
-const NO_RETRY: ReadonlySet<CrawlErrorClass> = new Set(['auth', 'rate_limit', 'parser', 'private_unfollowed', 'invalid_handle'])
+const NO_RETRY: ReadonlySet<CrawlErrorClass> = new Set(['auth', 'challenge', 'rate_limit', 'parser', 'private_unfollowed', 'invalid_handle'])
 
 export function classifyCrawlError(error: unknown): CrawlErrorClass {
   const code = (error as any)?.code as string | undefined
@@ -40,6 +46,22 @@ export function classifyCrawlError(error: unknown): CrawlErrorClass {
   // Body-predicate session death (login_required / checkpoint_required /
   // two_factor_required with HTTP 200) — auth-class, no retry (intel §1.3).
   if (code === 'instagram_session_dead') return 'auth'
+  // X GraphQL error-envelope code, stamped on the Error by @kyestu/spider x.ts
+  // (throwForXGraphQLErrors). Code-first classification beats message regexes:
+  // 88 = rate limit, 326 = account locked (challenge), 32/89/99/135/215 = auth.
+  // Not-found codes (34/50/63/144) are handled inside the spider
+  // (isNotFoundError); they must not hijack scheduler classification.
+  const xErrorCode = Number((error as any)?.xErrorCode)
+  if (Number.isFinite(xErrorCode)) {
+    if (xErrorCode === 88) return 'rate_limit'
+    if (xErrorCode === 326) return 'challenge'
+    if ([32, 89, 99, 135, 215].includes(xErrorCode)) return 'auth'
+  }
+  // X environment-drift challenge (account/access, /i/bouncer/ redirects):
+  // the credential is usually alive; restoring the original IP/UA/profile
+  // beats rotating cookies, so keep it distinct from 'auth'. Must precede the
+  // auth regex below — the marker message mentions "cookies".
+  if (/\bx_environment_challenge\b/.test(message)) return 'challenge'
   if (/429|rate.?limit|too many requests/i.test(message)) return 'rate_limit'
   if (/login|auth|csrf|cookie|403|401/i.test(message)) return 'auth'
   if (/timeout|timed out/i.test(message)) return 'timeout'
@@ -125,13 +147,15 @@ export class CooldownMap {
 
   hit(key: string, classification: CrawlErrorClass, platform?: string, retryAfterMs?: number): number {
     let duration =
-      retryAfterMs ??
-      (platform === 'instagram' ? (IG_OVERRIDES[classification] ?? RISK_COOLDOWN_MS[classification]) : RISK_COOLDOWN_MS[classification])
+      platform === 'instagram' ? (IG_OVERRIDES[classification] ?? RISK_COOLDOWN_MS[classification]) : RISK_COOLDOWN_MS[classification]
     // rate-limit cooldowns apply even when the class has no base duration; a
     // Retry-After hint can only lengthen, never shorten, capped at 6h
     if (duration <= 0 && classification !== 'rate_limit') return 0
-    if (classification === 'rate_limit' && retryAfterMs === undefined) {
-      const hint = retryAfterMillisFromMessage(this.lastMessage.get(key) ?? '')
+    if (classification === 'rate_limit') {
+      // The structured err.retryAfterSeconds field (x.ts assertXResponseOk,
+      // passed in by the crawler) wins over the message-embedded hint; both
+      // act as a floor on the base cooldown, never shortening it.
+      const hint = retryAfterMs ?? retryAfterMillisFromMessage(this.lastMessage.get(key) ?? '')
       if (hint !== null && hint > duration) duration = Math.min(hint, 6 * 60 * 60 * 1000)
     }
     if (duration <= 0) return 0

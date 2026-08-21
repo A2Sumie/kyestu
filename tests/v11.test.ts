@@ -420,6 +420,63 @@ test('cooldown: instagram_session_dead (code or message) classifies auth and nev
   expect(classifyCrawlError(new Error('Instagram session dead (login_required) detected in X response body (instagram_session_dead)'))).toBe('auth')
 })
 
+// ---------- X RE-intel landing (port of idol-bbq-utils@8c03591 scheduler side) ----------
+
+test('cooldown: X environment-drift challenge classifies separately from credential death', async () => {
+  const { classifyCrawlError, shouldRetry, CooldownMap } = await import('../src/pipeline/cooldown')
+  // account/access and /i/bouncer/ redirects carry the x_environment_challenge
+  // marker (spider x.ts 3xx split): the cookie is usually alive, so the class
+  // must stay distinct from auth's credential-death semantics. The marker
+  // message mentions "cookies", which would trip the auth regex if the
+  // challenge check did not run first.
+  const challenge = new Error(
+    'Error: x_environment_challenge redirect (302) to https://x.com/account/access - restore original environment (IP/UA/profile) before rotating cookies',
+  )
+  expect(classifyCrawlError(challenge)).toBe('challenge')
+  expect(classifyCrawlError(new Error('x_environment_challenge redirect (302) to https://x.com/i/bouncer/123'))).toBe(
+    'challenge',
+  )
+  expect(classifyCrawlError(new Error('Error: login redirect (302): session expired or checkpoint'))).toBe('auth')
+  // challenge: no retry, own 30m cooldown (idol-bbq RISK_COOLDOWN parity)
+  expect(shouldRetry('challenge', 'twitter')).toBe(false)
+  const map = new CooldownMap()
+  expect(map.hit('u', 'challenge', 'twitter')).toBe(30 * 60 * 1000)
+})
+
+test('cooldown: classifyCrawlError consumes structured X error-envelope codes', async () => {
+  const { classifyCrawlError } = await import('../src/pipeline/cooldown')
+  const withXCode = (code: number) => {
+    const error = new Error(`Failed to fetch tweets: envelope (code ${code})`)
+    ;(error as any).xErrorCode = code
+    return error
+  }
+  expect(classifyCrawlError(withXCode(88))).toBe('rate_limit')
+  expect(classifyCrawlError(withXCode(32))).toBe('auth')
+  expect(classifyCrawlError(withXCode(89))).toBe('auth')
+  expect(classifyCrawlError(withXCode(99))).toBe('auth')
+  expect(classifyCrawlError(withXCode(135))).toBe('auth')
+  expect(classifyCrawlError(withXCode(215))).toBe('auth')
+  expect(classifyCrawlError(withXCode(326))).toBe('challenge')
+  // Not-found family stays spider-internal (isNotFoundError); it must not
+  // hijack scheduler classification.
+  expect(classifyCrawlError(withXCode(50))).not.toBe('rate_limit')
+  expect(classifyCrawlError(withXCode(34))).toBe('unknown')
+})
+
+test('cooldown: structured retryAfterSeconds is a rate-limit floor, never a shortening override', async () => {
+  const { CooldownMap } = await import('../src/pipeline/cooldown')
+  // crawler.ts passes err.retryAfterSeconds * 1000 as retryAfterMs
+  const map = new CooldownMap()
+  // hint above base (20m) -> floor honored, capped at 6h
+  expect(map.hit('a', 'rate_limit', 'twitter', 3600_000)).toBe(3600_000)
+  const map2 = new CooldownMap()
+  // hint below base -> base wins (floor semantics, idol-bbq setCooldownForError parity)
+  expect(map2.hit('b', 'rate_limit', 'twitter', 60_000)).toBe(20 * 60 * 1000)
+  // hint on a non-rate-limit class is ignored (challenge keeps its own 30m)
+  const map3 = new CooldownMap()
+  expect(map3.hit('c', 'challenge', 'twitter', 5_000)).toBe(30 * 60 * 1000)
+})
+
 // ---------- regression: duplicate enqueue into the same window is idempotent ----------
 
 test('aggregation: re-enqueue of the same article key in one window is a no-op', () => {

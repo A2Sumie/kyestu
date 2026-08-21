@@ -944,3 +944,302 @@ test('XApiClient preloads persisted query ids from the spider cache', () => {
     const client = new X.XApiClient(undefined, undefined, undefined, cache)
     expect((client as any).api_with_queryid['ListMembers']).toBe('listMembersQueryId')
 })
+
+// ---------------------------------------------------------------------------
+// X RE-intel landing (2026-08-21): retry-after consumption, guest token mint,
+// error-envelope codes, original-size media URLs, stable client uuid.
+// ---------------------------------------------------------------------------
+
+import {
+    isAuthOrRateLimitError,
+    isNotFoundError,
+    parseRetryAfterSeconds,
+    stableClientUuid,
+    throwForXGraphQLErrors,
+} from '../src/spiders/x'
+
+test('parseRetryAfterSeconds parses integer seconds', () => {
+    expect(parseRetryAfterSeconds({ 'retry-after': '120' })).toBe(120)
+    expect(parseRetryAfterSeconds(new Headers({ 'Retry-After': '45' }))).toBe(45)
+})
+
+test('parseRetryAfterSeconds parses HTTP-date form', () => {
+    const date = new Date(Date.now() + 90 * 1000).toUTCString()
+    const seconds = parseRetryAfterSeconds({ 'retry-after': date })
+    expect(seconds).not.toBeNull()
+    expect(seconds!).toBeGreaterThan(80)
+    expect(seconds!).toBeLessThanOrEqual(90)
+    // Past dates are expired hints, not backoffs.
+    expect(parseRetryAfterSeconds({ 'retry-after': new Date(Date.now() - 60_000).toUTCString() })).toBeNull()
+})
+
+test('parseRetryAfterSeconds prefers x-retry-after-milliseconds and rejects garbage', () => {
+    expect(parseRetryAfterSeconds({ 'retry-after': '120', 'x-retry-after-milliseconds': '4500' })).toBe(5)
+    expect(parseRetryAfterSeconds({ 'retry-after': 'not-a-date' })).toBeNull()
+    expect(parseRetryAfterSeconds({ 'retry-after': '-5' })).toBeNull()
+    expect(parseRetryAfterSeconds({ 'retry-after': '0' })).toBeNull()
+    expect(parseRetryAfterSeconds({})).toBeNull()
+    expect(parseRetryAfterSeconds(null)).toBeNull()
+})
+
+test('assertXResponseOk normalizes retry-after to seconds and stamps retryAfterSeconds', () => {
+    let thrown: any
+    try {
+        assertXResponseOk(
+            { ok: false, status: 429, statusText: '', headers: new Headers({ 'retry-after': '120' }) } as Response,
+            'tweets',
+        )
+    } catch (error) {
+        thrown = error
+    }
+    expect(thrown.message).toBe('Failed to fetch tweets: 429 retry_after=120')
+    expect(thrown.retryAfterSeconds).toBe(120)
+})
+
+test('assertXResponseOk consumes x-retry-after-milliseconds on 429', () => {
+    let thrown: any
+    try {
+        assertXResponseOk(
+            {
+                ok: false,
+                status: 429,
+                statusText: '',
+                headers: new Headers({ 'retry-after': 'bogus', 'x-retry-after-milliseconds': '90000' }),
+            } as Response,
+            'tweets',
+        )
+    } catch (error) {
+        thrown = error
+    }
+    expect(thrown.message).toBe('Failed to fetch tweets: 429 retry_after=90')
+    expect(thrown.retryAfterSeconds).toBe(90)
+})
+
+test('throwForXGraphQLErrors passes errors[0].code through message and xErrorCode', () => {
+    let thrown: any
+    try {
+        throwForXGraphQLErrors({ errors: [{ code: 88, message: 'Rate limit exceeded' }] }, 'tweets')
+    } catch (error) {
+        thrown = error
+    }
+    expect(thrown.message).toBe('Failed to fetch tweets: Rate limit exceeded (code 88)')
+    expect(thrown.xErrorCode).toBe(88)
+})
+
+test('throwForXGraphQLErrors keeps the legacy message shape when no code exists', () => {
+    expect(() => throwForXGraphQLErrors({ errors: [{ message: 'Boom' }] }, 'tweets')).toThrow(
+        'Failed to fetch tweets: Boom',
+    )
+    expect(() => throwForXGraphQLErrors({ data: {} }, 'tweets')).not.toThrow()
+})
+
+test('X error codes drive auth/rate-limit and not-found classification', () => {
+    const withCode = (code: number) => {
+        try {
+            throwForXGraphQLErrors({ errors: [{ code, message: 'err' }] }, 'tweets')
+        } catch (error) {
+            return error
+        }
+        throw new Error('unreachable')
+    }
+    expect(isAuthOrRateLimitError(withCode(88))).toBe(true)
+    expect(isAuthOrRateLimitError(withCode(32))).toBe(true)
+    expect(isAuthOrRateLimitError(withCode(99))).toBe(true)
+    expect(isAuthOrRateLimitError(withCode(50))).toBe(false)
+    expect(isNotFoundError(withCode(50))).toBe(true)
+    expect(isNotFoundError(withCode(144))).toBe(true)
+    expect(isNotFoundError(withCode(88))).toBe(false)
+    // Message-embedded codes (e.g. after the error crosses a string boundary)
+    // remain classifiable.
+    expect(isAuthOrRateLimitError(new Error('Failed to fetch tweets: Rate limit exceeded (code 88)'))).toBe(true)
+    expect(isNotFoundError(new Error('Failed to fetch tweet detail: No status found (code 144)'))).toBe(true)
+    // Existing regex behavior is preserved for plain status messages.
+    expect(isAuthOrRateLimitError(new Error('Failed to fetch tweets: 429 retry_after=60'))).toBe(true)
+    expect(isAuthOrRateLimitError(new Error('Failed to fetch tweets: 404'))).toBe(false)
+})
+
+test('mediaParser upgrades photos to the 4096 variant keeping the original format', () => {
+    const tweet = buildXTimelineTweetResult('301', 'member', 'with media')
+    ;(tweet.legacy as any).extended_entities = {
+        media: [
+            { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/AAA.jpg' },
+            { type: 'photo', media_url_https: 'https://pbs.twimg.com/media/BBB.png' },
+            {
+                type: 'video',
+                media_url_https: 'https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/ccc.jpg',
+                video_info: {
+                    variants: [
+                        {
+                            bitrate: 100,
+                            url: 'https://video.twimg.com/x/low.mp4?tag=12',
+                            content_type: 'video/mp4',
+                        },
+                        {
+                            bitrate: 2000,
+                            url: 'https://video.twimg.com/x/high.mp4?tag=12',
+                            content_type: 'video/mp4',
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+    const json = {
+        data: {
+            user: {
+                result: {
+                    timeline_v2: {
+                        timeline: {
+                            instructions: [
+                                {
+                                    type: 'TimelineAddEntries',
+                                    entries: [
+                                        {
+                                            entryId: 'tweet-301',
+                                            content: { itemContent: { tweet_results: { result: tweet } } },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                },
+            },
+        },
+    }
+    const [article] = X.XApiJsonParser.tweetsArticleParser(json)
+    const byType = new Map(article!.media!.map((m: any, index: number) => [`${m.type}:${index}`, m.url]))
+    expect(byType.get('photo:0')).toBe('https://pbs.twimg.com/media/AAA.jpg?format=jpg&name=4096x4096')
+    // png keeps png — forcing jpg would drop the alpha channel.
+    expect(byType.get('photo:1')).toBe('https://pbs.twimg.com/media/BBB.png?format=png&name=4096x4096')
+    // Video variant selection is unchanged: highest-bitrate mp4, ?tag=12 kept.
+    expect(byType.get('video:2')).toBe('https://video.twimg.com/x/high.mp4?tag=12')
+    // Thumbs outside /media/ are not rewritten.
+    expect(byType.get('video_thumbnail:3')).toBe('https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/ccc.jpg')
+})
+
+test('stableClientUuid is a stable per-profile uuid v5', () => {
+    const cookie = 'auth_token=deadbeef1234; ct0=xyz'
+    const uuid = stableClientUuid(cookie)
+    // Same account identity regardless of cookie ordering / csrf value.
+    expect(uuid).toBe(stableClientUuid('ct0=abc; auth_token=deadbeef1234'))
+    expect(uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    // A different account is a different profile.
+    expect(uuid).not.toBe(stableClientUuid('auth_token=ffffaaaa; ct0=xyz'))
+})
+
+test('XApiClient mints, caches and re-mints guest tokens on 429', async () => {
+    const originalFetch = globalThis.fetch
+    const cache = new SimpleExpiringCache()
+    const calls: Array<{ url: string; headers: Record<string, string> }> = []
+    let activateCount = 0
+    let userInfoCount = 0
+    globalThis.fetch = (async (url: any, init: any) => {
+        const target = String(url)
+        calls.push({ url: target, headers: (init?.headers || {}) as Record<string, string> })
+        if (target.includes('guest/activate')) {
+            activateCount += 1
+            return new Response(JSON.stringify({ guest_token: `gt${activateCount}` }), { status: 200 })
+        }
+        if (target.includes('UserByScreenName')) {
+            userInfoCount += 1
+            if (userInfoCount === 1) {
+                return new Response('rate limited', { status: 429, headers: { 'retry-after': '120' } })
+            }
+            return new Response(JSON.stringify({ data: { user: { result: { rest_id: '42' } } } }), { status: 200 })
+        }
+        throw new Error(`unexpected fetch in test: ${target}`)
+    }) as any
+    try {
+        const client = new X.XApiClient(undefined, undefined, undefined, cache)
+        ;(client as any).api_with_queryid['UserByScreenName'] = 'qid'
+
+        // Mint + cache: two reads, one activate request.
+        expect(await client.resolveGuestToken()).toBe('gt1')
+        expect(await client.resolveGuestToken()).toBe('gt1')
+        expect(activateCount).toBe(1)
+        // A second client shares the cross-crawl cache.
+        const other = new X.XApiClient(undefined, undefined, undefined, cache)
+        expect(await other.resolveGuestToken()).toBe('gt1')
+        expect(activateCount).toBe(1)
+
+        // getRawUserInfo: first attempt 429s -> re-mint -> retry succeeds.
+        const json = await client.getRawUserInfo('someone', 'auth_token=tok; ct0=csrf')
+        expect(json?.data?.user?.result?.rest_id).toBe('42')
+        expect(activateCount).toBe(2)
+        expect(userInfoCount).toBe(2)
+        const userInfoCalls = calls.filter((call) => call.url.includes('UserByScreenName'))
+        expect(userInfoCalls[0]?.headers['x-guest-token']).toBe('gt1')
+        expect(userInfoCalls[1]?.headers['x-guest-token']).toBe('gt2')
+        // Default bearer is the static web token (no consumer env in test).
+        expect(String(calls.find((call) => call.url.includes('guest/activate'))?.headers.authorization)).toStartWith(
+            'Bearer ',
+        )
+    } finally {
+        globalThis.fetch = originalFetch
+    }
+})
+
+test('XApiClient honors X_GUEST_TOKEN override without minting', async () => {
+    const originalFetch = globalThis.fetch
+    const originalOverride = process.env.X_GUEST_TOKEN
+    let fetchCalls = 0
+    globalThis.fetch = (async () => {
+        fetchCalls += 1
+        throw new Error('must not fetch')
+    }) as any
+    process.env.X_GUEST_TOKEN = 'env-override-token'
+    try {
+        const client = new X.XApiClient()
+        expect(await client.resolveGuestToken()).toBe('env-override-token')
+        expect(fetchCalls).toBe(0)
+    } finally {
+        globalThis.fetch = originalFetch
+        if (originalOverride === undefined) {
+            delete process.env.X_GUEST_TOKEN
+        } else {
+            process.env.X_GUEST_TOKEN = originalOverride
+        }
+    }
+})
+
+test('XApiClient mints an app-style bearer via oauth2/token when consumer env is set', async () => {
+    const originalFetch = globalThis.fetch
+    const originalKey = process.env.X_CONSUMER_KEY
+    const originalSecret = process.env.X_CONSUMER_SECRET
+    const calls: Array<{ url: string; headers: Record<string, string>; body?: string }> = []
+    globalThis.fetch = (async (url: any, init: any) => {
+        const target = String(url)
+        calls.push({ url: target, headers: (init?.headers || {}) as Record<string, string>, body: init?.body })
+        if (target.includes('oauth2/token')) {
+            return new Response(JSON.stringify({ access_token: 'app-bearer-token' }), { status: 200 })
+        }
+        if (target.includes('guest/activate')) {
+            return new Response(JSON.stringify({ guest_token: 'gt-app' }), { status: 200 })
+        }
+        throw new Error(`unexpected fetch in test: ${target}`)
+    }) as any
+    process.env.X_CONSUMER_KEY = 'dummy-key'
+    process.env.X_CONSUMER_SECRET = 'dummy-secret'
+    try {
+        const client = new X.XApiClient()
+        expect(await client.resolveGuestToken()).toBe('gt-app')
+        const oauthCall = calls.find((call) => call.url.includes('oauth2/token'))
+        expect(oauthCall?.headers.authorization).toBe(`Basic ${Buffer.from('dummy-key:dummy-secret').toString('base64')}`)
+        expect(oauthCall?.body).toBe('grant_type=client_credentials')
+        const activateCall = calls.find((call) => call.url.includes('guest/activate'))
+        expect(activateCall?.headers.authorization).toBe('Bearer app-bearer-token')
+    } finally {
+        globalThis.fetch = originalFetch
+        if (originalKey === undefined) {
+            delete process.env.X_CONSUMER_KEY
+        } else {
+            process.env.X_CONSUMER_KEY = originalKey
+        }
+        if (originalSecret === undefined) {
+            delete process.env.X_CONSUMER_SECRET
+        } else {
+            process.env.X_CONSUMER_SECRET = originalSecret
+        }
+    }
+})

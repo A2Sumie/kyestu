@@ -15,7 +15,13 @@ import { JSONPath } from 'jsonpath-plus'
 import type { Logger } from '@kyestu/log'
 import { waitForResponse } from './base'
 import { SimpleExpiringCache, UserAgent } from '../utils'
-import { v4 as uuidv4 } from 'uuid'
+import { v5 as uuidv5 } from 'uuid'
+import {
+    X_FEATURES_LIST_LATEST_TWEETS_TIMELINE,
+    X_FEATURES_LIST_MEMBERS,
+    X_FEATURES_USER_BY_SCREEN_NAME,
+    X_FEATURES_USER_TIMELINE,
+} from '../data/x-graphql-features'
 import { noop } from 'puppeteer-core/lib/esm/third_party/rxjs/rxjs.js'
 
 type XListApiEngine = 'api-statuses' | 'api-member' | 'api-graphql' | 'api-unified'
@@ -161,6 +167,12 @@ const X_CACHE_OPERATION_PROFILE_TTL_S = 12 * 60 * 60
 const X_CACHE_REST_ID_TTL_S = 24 * 60 * 60
 const X_CACHE_LIST_VIEWPORT_TTL_S = 10 * 60
 const X_REPLIES_404_NEGATIVE_TTL_S = 30 * 60
+// Guest tokens are minted via /1.1/guest/activate.json and refreshed server-side
+// on the apps (GuestCredentialsRefresher), so they are not permanent credentials.
+// Cache briefly; re-mint on 429/403 (handled by the getRawUserInfo retry loop).
+const X_GUEST_TOKEN_TTL_S = 3 * 60 * 60
+const X_GUEST_ACTIVATE_URL = 'https://api.x.com/1.1/guest/activate.json'
+const X_OAUTH2_TOKEN_URL = 'https://api.x.com/oauth2/token'
 
 interface XOperationProfile {
     queryId: string
@@ -211,13 +223,44 @@ function isTooManyRequestsError(error: unknown) {
     return /too many requests|(^|\s)429(\s|$)/i.test(formatHydrationError(error))
 }
 
+/**
+ * X GraphQL error envelopes carry a machine-readable `errors[0].code`
+ * (double-ended RE confirmed the TwitterErrors model). Classify on the code
+ * first; fall back to message regexes only when no code was passed through.
+ *  - auth family: 32 could-not-authenticate, 89 invalid/expired token,
+ *    99 unable-to-verify-credentials, 135/215 auth failures
+ *  - rate-limit family: 88 rate limit exceeded
+ *  - not-found family: 34 page missing, 50 user not found, 63 suspended,
+ *    144 no status with that id
+ */
+const X_AUTH_ERROR_CODES = new Set([32, 89, 99, 135, 215])
+const X_RATE_LIMIT_ERROR_CODES = new Set([88])
+const X_NOT_FOUND_ERROR_CODES = new Set([34, 50, 63, 144])
+
+function xErrorCodeFromError(error: unknown): number | null {
+    const direct = Number((error as { xErrorCode?: unknown })?.xErrorCode)
+    if (Number.isFinite(direct)) {
+        return direct
+    }
+    const match = formatHydrationError(error).match(/\(code (\d+)\)/)
+    return match ? Number(match[1]) : null
+}
+
 function isAuthOrRateLimitError(error: unknown) {
+    const code = xErrorCodeFromError(error)
+    if (code !== null && (X_AUTH_ERROR_CODES.has(code) || X_RATE_LIMIT_ERROR_CODES.has(code))) {
+        return true
+    }
     return /(^|\s)(401|403|429)(\s|$)|too many requests|auth(?:entication|orization)?/i.test(
         formatHydrationError(error),
     )
 }
 
 function isNotFoundError(error: unknown) {
+    const code = xErrorCodeFromError(error)
+    if (code !== null && X_NOT_FOUND_ERROR_CODES.has(code)) {
+        return true
+    }
     return /not found|(^|\s)404(\s|$)/i.test(formatHydrationError(error))
 }
 
@@ -240,20 +283,112 @@ async function fetchWithTimeout(input: string | URL, init: RequestInit = {}, tim
     }
 }
 
+const X_RETRY_AFTER_MAX_SECONDS = 24 * 60 * 60
+
+/**
+ * Parses X's rate-limit retry hints into seconds. `Retry-After` arrives either
+ * as an integer-second count or as an HTTP-date (both shapes are sent by X);
+ * the iOS stack additionally emits `x-retry-after-milliseconds`, which wins
+ * when present. Returns null for absent/unparseable/expired values.
+ */
+function parseRetryAfterSeconds(headers?: Headers | Record<string, string> | null): number | null {
+    const read = (name: string): string | null => {
+        if (!headers) {
+            return null
+        }
+        if (typeof (headers as Headers).get === 'function') {
+            return (headers as Headers).get(name)
+        }
+        const record = headers as Record<string, string>
+        return record[name] ?? record[name.toLowerCase()] ?? null
+    }
+    const clamp = (seconds: number) =>
+        seconds > 0 && Number.isFinite(seconds) ? Math.min(seconds, X_RETRY_AFTER_MAX_SECONDS) : null
+    const millis = read('x-retry-after-milliseconds')?.trim()
+    if (millis && /^\d+$/.test(millis)) {
+        const seconds = clamp(Math.ceil(Number(millis) / 1000))
+        if (seconds !== null) {
+            return seconds
+        }
+    }
+    const raw = read('retry-after')?.trim()
+    if (!raw) {
+        return null
+    }
+    if (/^\d+$/.test(raw)) {
+        return clamp(Number(raw))
+    }
+    const timestamp = Date.parse(raw)
+    if (!Number.isFinite(timestamp)) {
+        return null
+    }
+    return clamp(Math.ceil((timestamp - Date.now()) / 1000))
+}
+
 /**
  * Single response-status gate for every X API fetch. Always embeds the numeric HTTP status in the
  * thrown message so downstream crawl-error classification can distinguish auth (401/403), rate limit
  * (429) and transient (5xx). statusText is often empty over HTTP/2, so the number must not be dropped.
+ * On 429 the Retry-After hint is normalized to seconds: embedded as `retry_after=<seconds>` (the
+ * scheduler's cooldown layer consumes this token) and stamped on the error as `retryAfterSeconds`.
  */
 function assertXResponseOk(res: Response, context: string): void {
     if (res.ok) {
         return
     }
     const statusText = res.statusText ? ` ${res.statusText}` : ''
-    const retryAfterHeader = res.headers?.get?.('retry-after')
+    const rawRetryAfter = res.status === 429 ? res.headers?.get?.('retry-after') : null
+    const retryAfterSeconds = res.status === 429 ? parseRetryAfterSeconds(res.headers) : null
     const retryAfter =
-        res.status === 429 && retryAfterHeader ? ` retry_after=${retryAfterHeader.replace(/\s+/g, '_')}` : ''
-    throw new Error(`Failed to fetch ${context}: ${res.status}${statusText}${retryAfter}`)
+        retryAfterSeconds !== null
+            ? ` retry_after=${retryAfterSeconds}`
+            : rawRetryAfter
+              ? ` retry_after=${String(rawRetryAfter).replace(/\s+/g, '_')}`
+              : ''
+    const error = new Error(`Failed to fetch ${context}: ${res.status}${statusText}${retryAfter}`)
+    if (retryAfterSeconds !== null) {
+        ;(error as Error & { retryAfterSeconds?: number }).retryAfterSeconds = retryAfterSeconds
+    }
+    throw error
+}
+
+/**
+ * Throws for a GraphQL error envelope, passing `errors[0].code` through both in
+ * the message (`(code N)`) and as a structured `xErrorCode` field so classifiers
+ * can distinguish auth expiry / rate limit / missing target without regexing
+ * free-text messages.
+ */
+function throwForXGraphQLErrors(json: any, context: string): void {
+    const errors = json?.errors
+    if (!errors) {
+        return
+    }
+    const firstError = Array.isArray(errors) ? errors[0] : errors
+    const message =
+        firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
+            ? firstError.message
+            : String(errors).slice(0, 200)
+    const rawCode = firstError && typeof firstError === 'object' ? (firstError as any).code : undefined
+    const code = Number(rawCode)
+    const hasCode = rawCode !== undefined && rawCode !== null && Number.isFinite(code)
+    const error = new Error(`Failed to fetch ${context}: ${message}${hasCode ? ` (code ${code})` : ''}`)
+    if (hasCode) {
+        ;(error as Error & { xErrorCode?: number }).xErrorCode = code
+    }
+    throw error
+}
+
+/**
+ * x-client-uuid is install-scoped on the apps: one stable UUID per install, no
+ * cryptographic binding. Derive a stable per-profile UUID from the account
+ * identity (auth_token) so a crawl profile keeps one UUID across rounds and
+ * restarts, instead of the previous per-request cookie-seeded pseudo-random
+ * stream (uuidv4 with a Buffer-truncated cookie as rng — near-zero entropy).
+ */
+function stableClientUuid(cookie: string): string {
+    const authToken = cookie.match(/(?:^|;\s*)auth_token=([0-9a-f]+)\s*(?:;|$)/i)?.[1]
+    const profileKey = authToken || cookie || 'anonymous'
+    return uuidv5(`idol-bbq-x-client:${profileKey}`, uuidv5.URL)
 }
 
 class XUserTimeLineSpider extends BaseSpider {
@@ -1097,7 +1232,13 @@ class XListSpider extends BaseSpider {
  * This is dangerous, because it will be banned by X if you use it too much
  */
 export class XApiClient {
-    guest_token = process.env.X_GUEST_TOKEN || '1918915913551839395'
+    /**
+     * Optional explicit guest-token override (X_GUEST_TOKEN env). Normally the
+     * token is minted on demand via /1.1/guest/activate.json and cached — see
+     * resolveGuestToken. The old hardcoded static token was a dead value tied
+     * to a past web session and has been removed.
+     */
+    guest_token = process.env.X_GUEST_TOKEN || ''
     PUBLIC_TOKEN =
         process.env.X_PUBLIC_TOKEN ||
         'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
@@ -1118,6 +1259,7 @@ export class XApiClient {
     cache?: SimpleExpiringCache
     page?: Page
     log?: Logger
+    private guestTokenMintInFlight: Promise<string> | null = null
 
     constructor(requestHeaders?: Record<string, string>, page?: Page, log?: Logger, cache?: SimpleExpiringCache) {
         this.api_with_queryid = {}
@@ -1163,6 +1305,87 @@ export class XApiClient {
     }
 
     /**
+     * Bearer for the guest-token flow. The web surface keeps using the static
+     * web client Bearer (PUBLIC_TOKEN). When X_CONSUMER_KEY/X_CONSUMER_SECRET
+     * are provided via env, an app-style Bearer is minted dynamically through
+     * POST /oauth2/token (Basic base64(key:secret), grant_type=client_credentials)
+     * — the consumer pair itself is only ever read from env, never hardcoded.
+     */
+    private async resolveGuestBearerToken(): Promise<string> {
+        const consumerKey = process.env.X_CONSUMER_KEY
+        const consumerSecret = process.env.X_CONSUMER_SECRET
+        if (!consumerKey || !consumerSecret) {
+            return this.PUBLIC_TOKEN
+        }
+        const cached = this.cache?.get('x-app-bearer')
+        if (typeof cached === 'string' && cached) {
+            return cached
+        }
+        const res = await fetchWithTimeout(X_OAUTH2_TOKEN_URL, {
+            method: 'POST',
+            headers: {
+                authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`,
+                'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+                'user-agent': this.BASE_HEADER['user-agent'] || UserAgent.CHROME,
+            },
+            body: 'grant_type=client_credentials',
+        })
+        assertXResponseOk(res, 'guest bearer token')
+        const json = await res.json()
+        const accessToken = json?.access_token
+        if (typeof accessToken !== 'string' || !accessToken) {
+            throw new Error('Failed to mint guest bearer token: access_token missing')
+        }
+        const bearer = accessToken.startsWith('Bearer ') ? accessToken : `Bearer ${accessToken}`
+        this.cache?.set('x-app-bearer', bearer, X_CACHE_OPERATION_PROFILE_TTL_S)
+        return bearer
+    }
+
+    /**
+     * Mints (or serves from cache) an X guest token via
+     * POST /1.1/guest/activate.json. forceRefresh bypasses the cache for the
+     * 429/403 re-mint rotation. Concurrent callers share one in-flight mint.
+     */
+    async resolveGuestToken(forceRefresh = false): Promise<string> {
+        if (this.guest_token) {
+            return this.guest_token
+        }
+        if (!forceRefresh) {
+            const cached = this.cache?.get('x-guest-token')
+            if (typeof cached === 'string' && cached) {
+                return cached
+            }
+        }
+        if (this.guestTokenMintInFlight) {
+            return this.guestTokenMintInFlight
+        }
+        const promise = (async () => {
+            const bearer = await this.resolveGuestBearerToken()
+            const res = await fetchWithTimeout(X_GUEST_ACTIVATE_URL, {
+                method: 'POST',
+                headers: {
+                    ...this.BASE_HEADER,
+                    authorization: bearer,
+                },
+            })
+            assertXResponseOk(res, 'guest token activate')
+            const json = await res.json()
+            const guestToken = json?.guest_token
+            if (typeof guestToken !== 'string' || !guestToken) {
+                throw new Error('Failed to mint guest token: guest_token missing')
+            }
+            this.cache?.set('x-guest-token', guestToken, X_GUEST_TOKEN_TTL_S)
+            return guestToken
+        })().finally(() => {
+            if (this.guestTokenMintInFlight === promise) {
+                this.guestTokenMintInFlight = null
+            }
+        })
+        this.guestTokenMintInFlight = promise
+        return promise
+    }
+
+    /**
      * Per-request transient retry for X data fetchers. Absorbs 5xx and network blips with one
      * short-backoff retry so a single flaky request no longer forces the manager to re-run the
      * whole per-URL fan-out. Auth (401/403), rate limit (429) and 404 pass through untouched so
@@ -1205,6 +1428,16 @@ export class XApiClient {
     }
 
     private assertOkOrInvalidate(res: Response, context: string, operation: XApis, userId?: string): void {
+        // Record X's request-tracing response headers (the apps read the same
+        // pair for telemetry); they are the only handle for correlating a
+        // failing request with server-side logs when debugging rate limits.
+        const transactionId = res.headers?.get?.('x-transaction-id')
+        const traceId = res.headers?.get?.('x-b3-traceid')
+        if (transactionId || traceId) {
+            this.log?.debug(
+                `X ${operation} response (${context}): x-transaction-id=${transactionId || 'none'} x-b3-traceid=${traceId || 'none'}`,
+            )
+        }
         if (res.ok) {
             return
         }
@@ -1342,8 +1575,25 @@ export class XApiClient {
             }
             this.storeOperationProfile(request.url(), request.headers())
         }
+        // Log X's tracing response headers for captured GraphQL traffic (the
+        // browser-capture counterpart of the direct-fetch logging in
+        // assertOkOrInvalidate) for post-incident request correlation.
+        const onResponse = (response: { url: () => string; headers: () => Record<string, string> }) => {
+            if (!/\/i\/api\/graphql\//.test(response.url())) {
+                return
+            }
+            const headers = response.headers() || {}
+            const transactionId = headers['x-transaction-id']
+            const traceId = headers['x-b3-traceid']
+            if (transactionId || traceId) {
+                this.log?.debug(
+                    `X captured graphql response ${response.url()}: x-transaction-id=${transactionId || 'none'} x-b3-traceid=${traceId || 'none'}`,
+                )
+            }
+        }
 
         this.page.on('request', onRequest)
+        this.page.on('response', onResponse)
         try {
             await this.navigateForCapture(targetUrl)
 
@@ -1361,6 +1611,7 @@ export class XApiClient {
             }
         } finally {
             this.page.off('request', onRequest)
+            this.page.off('response', onResponse)
         }
     }
 
@@ -1645,6 +1896,7 @@ export class XApiClient {
             extraHeaders?: Record<string, string>
             fallbackOperations?: Array<XApis>
             includeGuestToken?: boolean
+            guestToken?: string
             referer?: string
         },
     ) {
@@ -1658,7 +1910,10 @@ export class XApiClient {
             'x-csrf-token': csrfToken || profile?.headers['x-csrf-token'] || '',
             'x-twitter-active-user': profile?.headers['x-twitter-active-user'] || 'yes',
             'x-twitter-auth-type': profile?.headers['x-twitter-auth-type'] || 'OAuth2Session',
-            ...(options?.includeGuestToken ? { 'x-guest-token': this.guest_token } : {}),
+            // Empty tokens are dropped by normalizeRequestHeaders below, so a
+            // failed guest-token mint degrades to a cookie-only request instead
+            // of sending a bogus header.
+            ...(options?.includeGuestToken ? { 'x-guest-token': options?.guestToken || this.guest_token } : {}),
             ...(options?.extraHeaders || {}),
         }
         if (!headers.authorization) {
@@ -1687,38 +1942,48 @@ export class XApiClient {
             screen_name: id,
             withGrokTranslatedBio: false,
         }
-        const features = {
-            hidden_profile_subscriptions_enabled: true,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            responsive_web_profile_redirect_enabled: false,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            subscriptions_verification_info_is_identity_verified_enabled: true,
-            subscriptions_verification_info_verified_since_enabled: true,
-            highlights_tweets_tab_ui_enabled: true,
-            responsive_web_twitter_article_notes_tab_enabled: true,
-            subscriptions_feature_can_gift_premium: true,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-        }
+        const features = X_FEATURES_USER_BY_SCREEN_NAME
         const fieldToggles = { withPayments: false, withAuxiliaryUserLabels: true }
 
         const query = this.generateParams(features, variables, fieldToggles)
         const url = `${this.BASE_URL}${query_path}?${query.toString()}`
-        const res = await this.fetchWithTransientRetry(
-            url,
-            {
-                headers: this.buildOperationHeaders(XApis.UserByScreenName, cookie, {
-                    includeGuestToken: true,
-                    referer: `${this.BASE_URL}/${id}`,
-                }),
-            },
-            `user info (${id})`,
-        )
-        this.assertOkOrInvalidate(res, `user info (${id})`, XApis.UserByScreenName, id)
-        const json = await res.json()
-        return json
+        let lastError: unknown = null
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            // Guest tokens are minted on demand and cached; a 429/403 on a
+            // guest-tagged request can be a dead or quota-exhausted token, so
+            // re-mint once before giving up (only when we actually sent a
+            // minted token — an explicit X_GUEST_TOKEN override is not rotated).
+            const guestToken = await this.resolveGuestToken(attempt > 0).catch((error) => {
+                this.log?.warn(`Failed to mint X guest token: ${error}`)
+                return ''
+            })
+            const res = await this.fetchWithTransientRetry(
+                url,
+                {
+                    headers: this.buildOperationHeaders(XApis.UserByScreenName, cookie, {
+                        includeGuestToken: true,
+                        guestToken,
+                        referer: `${this.BASE_URL}/${id}`,
+                    }),
+                },
+                `user info (${id})`,
+            )
+            try {
+                this.assertOkOrInvalidate(res, `user info (${id})`, XApis.UserByScreenName, id)
+            } catch (error) {
+                lastError = error
+                if (attempt === 0 && guestToken && !this.guest_token && isAuthOrRateLimitError(error)) {
+                    this.log?.warn(
+                        `UserByScreenName for ${id} hit auth/rate-limit; re-minting guest token and retrying once`,
+                    )
+                    continue
+                }
+                throw error
+            }
+            const json = await res.json()
+            return json
+        }
+        throw lastError
     }
 
     async getRestId(id: string, cookie: string) {
@@ -1818,9 +2083,7 @@ export class XApiClient {
         const rest_id = await this.getRestId(id, cookie)
         const query_id = await this.resolveQueryId(XApis.UserTweets)
         const query_path = `${this.API_PREFIX}/${query_id}/${XApis.UserTweets}`
-        const uuid = uuidv4({
-            rng: cookie ? () => Buffer.from(cookie.padEnd(16, '0')) : undefined,
-        })
+        const uuid = stableClientUuid(cookie)
         const variables = {
             userId: rest_id,
             count: X_USER_TIMELINE_HYDRATE_COUNT,
@@ -1828,39 +2091,7 @@ export class XApiClient {
             withQuickPromoteEligibilityTweetFields: true,
             withVoice: true,
         }
-        const features = {
-            rweb_video_screen_enabled: false,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            premium_content_api_read_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
-            responsive_web_grok_analyze_post_followups_enabled: true,
-            responsive_web_jetfuel_frame: false,
-            responsive_web_grok_share_attachment_enabled: true,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            responsive_web_grok_show_grok_translated_post: false,
-            responsive_web_grok_analysis_button_from_backend: false,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_grok_image_annotation_enabled: true,
-            responsive_web_enhance_cards_enabled: false,
-        }
+        const features = X_FEATURES_USER_TIMELINE
         const fieldToggles = { withArticlePlainText: false }
         const query = this.generateParams(features, variables, fieldToggles)
 
@@ -1877,14 +2108,7 @@ export class XApiClient {
         )
         this.assertOkOrInvalidate(res, 'tweets', XApis.UserTweets, id)
         const json = await res.json()
-        if (json.errors) {
-            const firstError = Array.isArray(json.errors) ? json.errors[0] : json.errors
-            const message =
-                firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
-                    ? firstError.message
-                    : String(json.errors).slice(0, 200)
-            throw new Error(`Failed to fetch tweets: ${message}`)
-        }
+        throwForXGraphQLErrors(json, 'tweets')
         return XApiJsonParser.tweetsArticleParser(json)
     }
     async grabReplies(id: string, cookie: string) {
@@ -1895,9 +2119,7 @@ export class XApiClient {
         const rest_id = await this.getRestId(id, cookie)
         const query_id = await this.resolveQueryId(XApis.UserTweetsAndReplies)
         const query_path = `${this.API_PREFIX}/${query_id}/${XApis.UserTweetsAndReplies}`
-        const uuid = uuidv4({
-            rng: cookie ? () => Buffer.from(cookie.padEnd(16, '0')) : undefined,
-        })
+        const uuid = stableClientUuid(cookie)
         const variables = {
             userId: rest_id,
             count: 8,
@@ -1905,39 +2127,7 @@ export class XApiClient {
             withCommunity: true,
             withVoice: true,
         }
-        const features = {
-            rweb_video_screen_enabled: false,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            premium_content_api_read_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
-            responsive_web_grok_analyze_post_followups_enabled: true,
-            responsive_web_jetfuel_frame: false,
-            responsive_web_grok_share_attachment_enabled: true,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            responsive_web_grok_show_grok_translated_post: false,
-            responsive_web_grok_analysis_button_from_backend: false,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_grok_image_annotation_enabled: true,
-            responsive_web_enhance_cards_enabled: false,
-        }
+        const features = X_FEATURES_USER_TIMELINE
         const fieldToggles = { withArticlePlainText: false }
         const query = this.generateParams(features, variables, fieldToggles)
         const url = `${this.BASE_URL}${query_path}?${query.toString()}`
@@ -1966,14 +2156,7 @@ export class XApiClient {
             throw error
         }
         const json = await res.json()
-        if (json.errors) {
-            const firstError = Array.isArray(json.errors) ? json.errors[0] : json.errors
-            const message =
-                firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
-                    ? firstError.message
-                    : String(json.errors).slice(0, 200)
-            throw new Error(`Failed to fetch replies: ${message}`)
-        }
+        throwForXGraphQLErrors(json, 'replies')
         return XApiJsonParser.tweetsRepliesParser(json)
     }
 
@@ -1995,39 +2178,7 @@ export class XApiClient {
             withBirdwatchNotes: true,
             withVoice: true,
         }
-        const features = {
-            rweb_video_screen_enabled: false,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            premium_content_api_read_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
-            responsive_web_grok_analyze_post_followups_enabled: true,
-            responsive_web_jetfuel_frame: false,
-            responsive_web_grok_share_attachment_enabled: true,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            responsive_web_grok_show_grok_translated_post: false,
-            responsive_web_grok_analysis_button_from_backend: false,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_grok_image_annotation_enabled: true,
-            responsive_web_enhance_cards_enabled: false,
-        }
+        const features = X_FEATURES_USER_TIMELINE
         const fieldToggles = {
             withArticleRichContentState: true,
             withArticlePlainText: false,
@@ -2048,14 +2199,7 @@ export class XApiClient {
         )
         this.assertOkOrInvalidate(res, 'tweet detail', XApis.TweetDetail, screenName)
         const json = await res.json()
-        if (json.errors) {
-            const firstError = Array.isArray(json.errors) ? json.errors[0] : json.errors
-            const message =
-                firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
-                    ? firstError.message
-                    : String(json.errors).slice(0, 200)
-            throw new Error(`Failed to fetch tweet detail: ${message}`)
-        }
+        throwForXGraphQLErrors(json, 'tweet detail')
         return XApiJsonParser.tweetDetailParser(json, statusId)
     }
 
@@ -2073,44 +2217,7 @@ export class XApiClient {
         const query_id = this.api_with_queryid[XApis.ListLatestTweetsTimeline] ?? 'NRigOCel0QKiWs_GuBgOzw'
         const query_path = `${this.API_PREFIX}/${query_id}/ListLatestTweetsTimeline`
         const variables = { listId: list_id, count: 20 }
-        const features = {
-            rweb_video_screen_enabled: false,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            responsive_web_profile_redirect_enabled: false,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            premium_content_api_read_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
-            responsive_web_grok_analyze_post_followups_enabled: true,
-            responsive_web_jetfuel_frame: true,
-            responsive_web_grok_share_attachment_enabled: true,
-            responsive_web_grok_annotations_enabled: false,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            responsive_web_grok_show_grok_translated_post: false,
-            responsive_web_grok_analysis_button_from_backend: true,
-            post_ctas_fetch_enabled: false,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_grok_image_annotation_enabled: true,
-            responsive_web_grok_imagine_annotation_enabled: true,
-            responsive_web_grok_community_note_auto_translation_is_enabled: false,
-            responsive_web_enhance_cards_enabled: false,
-        }
+        const features = X_FEATURES_LIST_LATEST_TWEETS_TIMELINE
         const query = this.generateParams(features, variables)
 
         const url = `${this.BASE_URL}${query_path}?${query.toString()}`
@@ -2125,14 +2232,7 @@ export class XApiClient {
         )
         this.assertOkOrInvalidate(res, 'tweets', XApis.ListLatestTweetsTimeline)
         const json = await res.json()
-        if (json.errors) {
-            const firstError = Array.isArray(json.errors) ? json.errors[0] : json.errors
-            const message =
-                firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
-                    ? firstError.message
-                    : String(json.errors).slice(0, 200)
-            throw new Error(`Failed to fetch tweets: ${message}`)
-        }
+        throwForXGraphQLErrors(json, 'tweets')
         return XApiJsonParser.tweetsArticleParser(json)
     }
 
@@ -2142,43 +2242,7 @@ export class XApiClient {
         const query_id = this.api_with_queryid[XApis.ListMembers] ?? '8oGwd_SHm0nGs91qI4znfA'
         const query_path = `${this.API_PREFIX}/${query_id}/ListMembers`
         const variables = { listId: list_id, count: 99 }
-        const features = {
-            rweb_video_screen_enabled: false,
-            payments_enabled: false,
-            profile_label_improvements_pcf_label_in_post_enabled: true,
-            responsive_web_profile_redirect_enabled: false,
-            rweb_tipjar_consumption_enabled: true,
-            verified_phone_label_enabled: false,
-            creator_subscriptions_tweet_preview_api_enabled: true,
-            responsive_web_graphql_timeline_navigation_enabled: true,
-            responsive_web_graphql_skip_user_profile_image_extensions_enabled: false,
-            premium_content_api_read_enabled: false,
-            communities_web_enable_tweet_community_results_fetch: true,
-            c9s_tweet_anatomy_moderator_badge_enabled: true,
-            responsive_web_grok_analyze_button_fetch_trends_enabled: false,
-            responsive_web_grok_analyze_post_followups_enabled: true,
-            responsive_web_jetfuel_frame: true,
-            responsive_web_grok_share_attachment_enabled: true,
-            articles_preview_enabled: true,
-            responsive_web_edit_tweet_api_enabled: true,
-            graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
-            view_counts_everywhere_api_enabled: true,
-            longform_notetweets_consumption_enabled: true,
-            responsive_web_twitter_article_tweet_consumption_enabled: true,
-            tweet_awards_web_tipping_enabled: false,
-            responsive_web_grok_show_grok_translated_post: false,
-            responsive_web_grok_analysis_button_from_backend: true,
-            creator_subscriptions_quote_tweet_preview_enabled: false,
-            freedom_of_speech_not_reach_fetch_enabled: true,
-            standardized_nudges_misinfo: true,
-            tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
-            longform_notetweets_rich_text_read_enabled: true,
-            longform_notetweets_inline_media_enabled: true,
-            responsive_web_grok_image_annotation_enabled: true,
-            responsive_web_grok_imagine_annotation_enabled: true,
-            responsive_web_grok_community_note_auto_translation_is_enabled: false,
-            responsive_web_enhance_cards_enabled: false,
-        }
+        const features = X_FEATURES_LIST_MEMBERS
         const query = this.generateParams(features, variables)
 
         const url = `${this.BASE_URL}${query_path}?${query.toString()}`
@@ -2194,14 +2258,7 @@ export class XApiClient {
         )
         this.assertOkOrInvalidate(res, 'list members', XApis.ListMembers)
         const json = await res.json()
-        if (json.errors) {
-            const firstError = Array.isArray(json.errors) ? json.errors[0] : json.errors
-            const message =
-                firstError && typeof firstError === 'object' && typeof firstError.message === 'string'
-                    ? firstError.message
-                    : String(json.errors).slice(0, 200)
-            throw new Error(`Failed to fetch list members: ${message}`)
-        }
+        throwForXGraphQLErrors(json, 'list members')
         return XApiJsonParser.tweetsFollowsFromListParser(json)
     }
 }
@@ -2489,6 +2546,27 @@ namespace XApiJsonParser {
         return Number.isFinite(parsed) ? parsed : 0
     }
 
+    /**
+     * X media CDN URLs accept `?format=<ext>&name=<variant>`; without a name
+     * parameter the CDN serves a downscaled default. Pin images to the 4096
+     * variant (the app "full" value), keeping the original extension in both
+     * path and format — forcing jpg would drop png alpha. Non-CDN or already
+     * parameterized URLs pass through untouched.
+     */
+    function toOriginalSizeImageUrl(url: any) {
+        if (typeof url !== 'string' || !url) {
+            return url
+        }
+        const match = url.match(/^(https:\/\/pbs\.twimg\.com\/media\/[^?]+?)\.([a-zA-Z0-9]+)(?:\?.*)?$/)
+        const base = match?.[1]
+        const rawExtension = match?.[2]
+        if (!base || !rawExtension) {
+            return url
+        }
+        const extension = rawExtension.toLowerCase() === 'jpeg' ? 'jpg' : rawExtension.toLowerCase()
+        return `${base}.${rawExtension}?format=${extension}&name=4096x4096`
+    }
+
     function mediaParser(media: any) {
         if (!media) {
             return null
@@ -2513,7 +2591,7 @@ namespace XApiJsonParser {
                 if (type === 'photo') {
                     return {
                         type,
-                        url: media_url_https,
+                        url: toOriginalSizeImageUrl(media_url_https),
                         ...(ext_alt_text ? { alt: ext_alt_text } : {}),
                     }
                 }
@@ -2528,7 +2606,7 @@ namespace XApiJsonParser {
                             : null,
                         {
                             type: 'video_thumbnail',
-                            url: media_url_https,
+                            url: toOriginalSizeImageUrl(media_url_https),
                         },
                     ]
                 }
@@ -2790,6 +2868,19 @@ namespace XApiJsonParser {
                     const location = response.headers()['location'] || ''
                     if (/login/i.test(location)) {
                         fail(new Error(`Error: login redirect (${response.status()}): session expired or checkpoint`))
+                    } else if (/account\/access|\/i\/bouncer\//i.test(location)) {
+                        // Bouncer/lock flow (iOS whitelist entrance is
+                        // /account/access): an environment-drift challenge, not
+                        // a dead credential. The cookie usually still works from
+                        // the original IP/UA/device profile — restoring the
+                        // environment beats rotating cookies. The
+                        // x_environment_challenge marker lets the scheduler
+                        // classify this separately from credential death.
+                        fail(
+                            new Error(
+                                `Error: x_environment_challenge redirect (${response.status()}) to ${location} - restore original environment (IP/UA/profile) before rotating cookies`,
+                            ),
+                        )
                     } else {
                         fail(
                             new Error(
@@ -2856,6 +2947,19 @@ namespace XApiJsonParser {
                     const location = response.headers()['location'] || ''
                     if (/login/i.test(location)) {
                         fail(new Error(`Error: login redirect (${response.status()}): session expired or checkpoint`))
+                    } else if (/account\/access|\/i\/bouncer\//i.test(location)) {
+                        // Bouncer/lock flow (iOS whitelist entrance is
+                        // /account/access): an environment-drift challenge, not
+                        // a dead credential. The cookie usually still works from
+                        // the original IP/UA/device profile — restoring the
+                        // environment beats rotating cookies. The
+                        // x_environment_challenge marker lets the scheduler
+                        // classify this separately from credential death.
+                        fail(
+                            new Error(
+                                `Error: x_environment_challenge redirect (${response.status()}) to ${location} - restore original environment (IP/UA/profile) before rotating cookies`,
+                            ),
+                        )
                     } else {
                         fail(
                             new Error(
@@ -2910,6 +3014,19 @@ namespace XApiJsonParser {
                     const location = response.headers()['location'] || ''
                     if (/login/i.test(location)) {
                         fail(new Error(`Error: login redirect (${response.status()}): session expired or checkpoint`))
+                    } else if (/account\/access|\/i\/bouncer\//i.test(location)) {
+                        // Bouncer/lock flow (iOS whitelist entrance is
+                        // /account/access): an environment-drift challenge, not
+                        // a dead credential. The cookie usually still works from
+                        // the original IP/UA/device profile — restoring the
+                        // environment beats rotating cookies. The
+                        // x_environment_challenge marker lets the scheduler
+                        // classify this separately from credential death.
+                        fail(
+                            new Error(
+                                `Error: x_environment_challenge redirect (${response.status()}) to ${location} - restore original environment (IP/UA/profile) before rotating cookies`,
+                            ),
+                        )
                     } else {
                         fail(
                             new Error(
@@ -3011,6 +3128,18 @@ type Card<T extends CardTypeEnum> = {
 
 type ExtraContentType = Card<CardTypeEnum> | null
 
-export { ArticleTypeEnum, assertXResponseOk, XApiJsonParser, XUserTimeLineSpider, XStatusSpider, XListSpider }
+export {
+    ArticleTypeEnum,
+    assertXResponseOk,
+    isAuthOrRateLimitError,
+    isNotFoundError,
+    parseRetryAfterSeconds,
+    stableClientUuid,
+    throwForXGraphQLErrors,
+    XApiJsonParser,
+    XUserTimeLineSpider,
+    XStatusSpider,
+    XListSpider,
+}
 
 export type { ExtraContentType, XListApiEngine }

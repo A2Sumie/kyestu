@@ -296,11 +296,20 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
               cooldowns.succeed(url)
               board?.record(sessionKey, true)
             } else {
+              const classification = classifyCrawlError(lastError)
               cooldowns.recordMessage(url, lastError instanceof Error ? lastError.message : String(lastError))
-              cooldowns.hit(url, classifyCrawlError(lastError), platform)
+              // X 429s stamp a structured Retry-After hint (x.ts
+              // assertXResponseOk); pass it through so the rate-limit
+              // cooldown floor matches the platform's explicit ask.
+              const retryAfterSeconds = Number((lastError as any)?.retryAfterSeconds)
+              const retryAfterMs =
+                Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : undefined
+              cooldowns.hit(url, classification, platform, retryAfterMs)
               // auth-class failure = the session itself is suspect: feed the
-              // board so keepalive escalates suspect -> broken -> quarantined
-              if (board && sessionKey && classifyCrawlError(lastError) === 'auth') {
+              // board so keepalive escalates suspect -> broken -> quarantined.
+              // 'challenge' (X environment drift) deliberately does NOT feed
+              // the board: the credential is usually alive.
+              if (board && sessionKey && classification === 'auth') {
                 board.record(sessionKey, false, lastError)
               }
             }
