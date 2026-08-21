@@ -1,6 +1,7 @@
 import dayjs from 'dayjs'
 import { test, expect } from 'bun:test'
 import { spiderRegistry } from '../src'
+import { Platform } from '../src/types'
 import { ArticleTypeEnum, YoutubeApiJsonParser, YoutubeSpider } from '../src/spiders/youtube'
 import { HTTPClient, SimpleExpiringCache } from '../src/utils'
 
@@ -937,4 +938,21 @@ test('YouTube hydration keeps the list-page members-only flag when building prem
     } finally {
         ;(HTTPClient as any).download_webpage = originalDownload
     }
+})
+
+test('YouTube registry extractBasicInfo resolves single-video URLs and channel handles', () => {
+    // Regression: single-article forward dispatch called extractBasicInfo on the
+    // ingested watch URL and bailed with "Invalid url" because no id group matched.
+    expect(spiderRegistry.extractBasicInfo('https://www.youtube.com/watch?v=o7VnR1w-5T4')).toEqual({
+        u_id: 'o7VnR1w-5T4',
+        platform: Platform.YouTube,
+    })
+    expect(spiderRegistry.extractBasicInfo('https://youtu.be/pCIvwukJXqI?si=abc')).toEqual({
+        u_id: 'pCIvwukJXqI',
+        platform: Platform.YouTube,
+    })
+    expect(spiderRegistry.extractBasicInfo('https://www.youtube.com/@227SMEJ')).toEqual({
+        u_id: '227SMEJ',
+        platform: Platform.YouTube,
+    })
 })

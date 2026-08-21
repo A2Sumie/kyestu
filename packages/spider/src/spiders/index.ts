@@ -3,7 +3,7 @@ import { BaseSpider, SpiderRegistry, SpiderPriority, type SpiderPlugin } from '.
 import { InstagramSpider } from './instagram'
 import { XListSpider, XStatusSpider, XUserTimeLineSpider } from './x'
 import { TiktokSpider } from './tiktok'
-import { YoutubeSpider } from './youtube'
+import { YoutubeApiJsonParser, YoutubeSpider } from './youtube'
 import { NanabunnonijyuuniWebsiteSpider } from './website'
 import { LeapProjectsSpider } from './leap'
 import { MessageBoardSpider } from './messageboard'
@@ -59,6 +59,16 @@ const YoutubePlugin: SpiderPlugin = {
     priority: SpiderPriority.NORMAL,
     urlPattern: YoutubeSpider._VALID_URL,
     create: (log) => new YoutubeSpider(log).init(),
+    // Watch/shorts/live URLs carry no handle group; resolve them to the video id
+    // so single-article forward dispatch ("Invalid url") works for ingested videos.
+    extractBasicInfo: (url) => {
+        const videoId = YoutubeApiJsonParser.parseVideoId(url)
+        if (videoId) {
+            return { u_id: videoId, platform: Platform.YouTube }
+        }
+        const handle = YoutubeSpider._VALID_URL.exec(url)?.groups?.id
+        return handle ? { u_id: handle, platform: Platform.YouTube } : undefined
+    },
 }
 
 const WebsitePlugin: SpiderPlugin = {
