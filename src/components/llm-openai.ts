@@ -1,5 +1,7 @@
 import type { Component } from '../core/types'
+import type { KyestuDb } from './db'
 import { writeSchedulesFromProcessorResult } from '../pipeline/schedule-webhook'
+import { ServiceStateStore, llmCircuitStore } from '../pipeline/service-state'
 
 /**
  * OpenAI-protocol LLM processor (`processor/openai`).
@@ -77,6 +79,26 @@ export interface ProcessContext {
   minConfidence?: number
 }
 
+export interface PersistedCircuit {
+  consecutiveFailures: number
+  /** absolute open-until timestamp (ms); an expired open never revives the circuit */
+  openUntil: number
+  lastError: string | null
+}
+
+/** persistent backing for the breaker (service_state); memory stays the runtime master copy */
+export interface CircuitStore {
+  load(): PersistedCircuit | null
+  save(state: PersistedCircuit): void
+  remove(): void
+}
+
+export interface OpenAiProcessorClientOptions {
+  store?: CircuitStore
+  /** separate namespace for the fallback endpoint's breaker (`<entry-id>:fallback`) */
+  fallbackStore?: CircuitStore
+}
+
 export interface ProcessorApi {
   process: (text: string, context?: ProcessContext) => Promise<string>
 }
@@ -107,19 +129,42 @@ export class OpenAiProcessorClient implements ProcessorApi {
   private circuitOpenUntil = 0
   private lastError: string | null = null
   private lastProbe: ProviderStatus['last_probe'] = null
+  private readonly store?: CircuitStore
 
-  constructor(config: OpenAiProcessorConfig) {
+  constructor(config: OpenAiProcessorConfig, options: OpenAiProcessorClientOptions = {}) {
     this.config = config
     this.apiKey = resolveApiKey(config.api_key)
+    this.store = options.store
     if (config.fallback) {
       const { extended_payload: _primaryPayload, ...shared } = config
-      this.fallbackClient = new OpenAiProcessorClient({
-        ...shared,
-        ...config.fallback,
-        api_key: config.fallback.api_key ?? config.api_key,
-        fallback: undefined,
-      })
+      this.fallbackClient = new OpenAiProcessorClient(
+        {
+          ...shared,
+          ...config.fallback,
+          api_key: config.fallback.api_key ?? config.api_key,
+          fallback: undefined,
+        },
+        { store: options.fallbackStore },
+      )
     }
+    // rehydrate before the component exposes the client (paper p76: in-memory
+    // state survives rebuilds only when backed by a longer-lived dependency):
+    // an expired open never revives, but the failure counter survives until
+    // the next success — the same convention as CooldownMap's escalations
+    const persisted = this.store?.load()
+    if (persisted) {
+      this.consecutiveFailures = Math.max(0, Math.trunc(persisted.consecutiveFailures))
+      this.circuitOpenUntil = persisted.openUntil > Date.now() ? persisted.openUntil : 0
+      this.lastError = persisted.lastError
+    }
+  }
+
+  private persist(): void {
+    this.store?.save({
+      consecutiveFailures: this.consecutiveFailures,
+      openUntil: this.circuitOpenUntil,
+      lastError: this.lastError,
+    })
   }
 
   status(): ProviderStatus {
@@ -137,6 +182,7 @@ export class OpenAiProcessorClient implements ProcessorApi {
     this.consecutiveFailures = 0
     this.circuitOpenUntil = 0
     this.lastError = null
+    this.store?.remove()
   }
 
   /** reachability/auth probe: tiny request, bypasses the circuit */
@@ -212,6 +258,9 @@ export class OpenAiProcessorClient implements ProcessorApi {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const result = await this.processOnce(text)
+        // success heals the breaker; persist only when there was state to
+        // clear — the store is write-through on transitions, not per call
+        if (this.consecutiveFailures > 0 || this.lastError !== null) this.store?.remove()
         this.consecutiveFailures = 0
         this.lastError = null
         return result
@@ -234,6 +283,7 @@ export class OpenAiProcessorClient implements ProcessorApi {
       const cooldownMs = (this.config.circuit?.cooldown_seconds ?? 300) * 1000
       this.circuitOpenUntil = Date.now() + cooldownMs
     }
+    this.persist()
   }
 
   private async processOnce(text: string): Promise<string> {
@@ -314,7 +364,20 @@ function readResponsesText(data: any): string {
 }
 
 export const openAiProcessorComponent: Component<OpenAiProcessorConfig> = {
+  // db backs the circuit-breaker persistence (service_state, key
+  // `llm-circuit:<entry-id>`); every load path carries an infra/db entry
+  // (main.ts INFRA_DEFAULTS, all tests/examples), so this is a hard
+  // dependency, not an opt-in read like the crawler's cookie-health board
+  inject: ['db'],
   apply: (ctx, config) => {
-    ctx.expose(new OpenAiProcessorClient(config) satisfies ProcessorApi)
+    const db = ctx.get<KyestuDb>('db')!
+    const entryId = String((config as OpenAiProcessorConfig & { __id?: unknown }).__id ?? 'processor')
+    const kv = new ServiceStateStore(db)
+    ctx.expose(
+      new OpenAiProcessorClient(config, {
+        store: llmCircuitStore(kv, entryId),
+        fallbackStore: config.fallback ? llmCircuitStore(kv, `${entryId}:fallback`) : undefined,
+      }) satisfies ProcessorApi,
+    )
   },
 }

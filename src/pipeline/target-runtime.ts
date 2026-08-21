@@ -1,5 +1,6 @@
 import type { Context } from '../core/runtime'
 import type { KyestuDb } from '../components/db'
+import { ServiceStateStore, digestStateStore } from '../pipeline/service-state'
 import type { MediaStore } from '../pipeline/media'
 import { Aggregator, type AggregationConfig } from '../pipeline/aggregation'
 import { MediaVisibility, applyTextPolicies, gateByAge, gateByKeywords, type TargetPolicyConfig } from '../pipeline/policies'
@@ -18,11 +19,30 @@ export interface TargetRuntimeConfig extends TargetPolicyConfig {
   summary_card?: AggregationConfig | boolean
 }
 
+export interface PersistedDigestItem {
+  input: SendInput
+  text: string
+}
+
+/**
+ * Persistent backing for the digest buffer + first-sent window marks
+ * (service_state, keys `digest:<target-entry-id>:buffer` /
+ * `digest:<target-entry-id>:first-sent-windows`); memory stays the runtime
+ * master copy.
+ */
+export interface DigestStateStore {
+  loadBuffer(): PersistedDigestItem[]
+  saveBuffer(items: PersistedDigestItem[]): void
+  loadFirstSentWindows(): number[]
+  saveFirstSentWindows(ids: number[]): void
+}
+
 export class TargetRuntime {
   private readonly aggregator: Aggregator
   private readonly visibility: MediaVisibility
   private readonly pairings: VideoPairings
-  private digestBuffer: Array<{ input: SendInput; text: string }> = []
+  private readonly digestState: DigestStateStore
+  private digestBuffer: PersistedDigestItem[] = []
   private firstSentWindows = new Set<number>()
 
   constructor(
@@ -35,6 +55,13 @@ export class TargetRuntime {
     this.aggregator = new Aggregator(db)
     this.visibility = new MediaVisibility(db)
     this.pairings = new VideoPairings(db)
+    // rehydrate after a fiber rebuild / process restart: the digest batch is
+    // not lost and an already-sent "first" of an open aggregation window is
+    // not sent immediately a second time (window ids are stable — ensureWindow
+    // reopens the open window by idempotency key)
+    this.digestState = digestStateStore(new ServiceStateStore(db), targetId)
+    this.digestBuffer = this.digestState.loadBuffer()
+    this.firstSentWindows = new Set(this.digestState.loadFirstSentWindows())
   }
 
   private summaryConfig(): AggregationConfig | null {
@@ -80,6 +107,7 @@ export class TargetRuntime {
       if (summary.send_first_immediately !== false && !this.firstSentWindows.has(windowId)) {
         await this.rawSend({ ...input, rendered }, text)
         this.firstSentWindows.add(windowId)
+        this.digestState.saveFirstSentWindows([...this.firstSentWindows])
         this.recordVisibility(rendered)
         return
       }
@@ -109,8 +137,10 @@ export class TargetRuntime {
     const digestThreshold = this.config.digest_threshold ?? 0
     if (digestThreshold >= 2) {
       this.digestBuffer.push({ input: { ...input, rendered }, text })
+      this.digestState.saveBuffer(this.digestBuffer)
       if (this.digestBuffer.length >= digestThreshold) {
         const batch = this.digestBuffer.splice(0, this.digestBuffer.length)
+        this.digestState.saveBuffer(this.digestBuffer)
         const mergedText = batch.map((b) => b.text).filter(Boolean).join('\n———\n')
         const mergedMedia = batch.flatMap((b) => b.input.rendered.media)
         await this.rawSend({ ...batch[0]!.input, rendered: { text: mergedText, media: mergedMedia } }, mergedText)
