@@ -61,8 +61,12 @@ type YoutubeCrawlConfig<T extends TaskType> = {
 }
 
 class YoutubeSpider extends BaseSpider {
-    // extends from XBaseSpider regex
-    static _VALID_URL = /^(?:https:\/\/)?(?:www\.)?youtube\.com\/@(?<id>[^/?#]+)/
+    // extends from XBaseSpider regex. Besides channel pages (`/@handle`), single
+    // video URLs (watch/shorts/live, youtu.be) are accepted: X-link ingest
+    // dispatches one-shot scheduled runs for videos linked from posts, and those
+    // must resolve to this spider instead of dying with "Spider not found".
+    static _VALID_URL =
+        /^(?:https:\/\/)?(?:(?:www\.|m\.)?youtube\.com\/(?:@(?<id>[^/?#]+)|watch\?(?=[^\s#]*\bv=)|shorts\/[A-Za-z0-9_-]{6,128}|live\/[A-Za-z0-9_-]{6,128})|youtu\.be\/[A-Za-z0-9_-]{6,128})/
     static _PLATFORM = Platform.YouTube
     BASE_URL: string = 'https://www.youtube.com/'
     NAME: string = 'Youtube Generic Spider'
@@ -72,36 +76,48 @@ class YoutubeSpider extends BaseSpider {
         page: Page | undefined,
         config: YoutubeCrawlConfig<T>,
     ): Promise<TaskTypeResult<T, Platform.YouTube>> {
+        const { task_type } = config
+        if (task_type !== 'article') {
+            throw new Error('Invalid task type')
+        }
+
+        const videoId = YoutubeApiJsonParser.parseVideoId(url)
+        if (videoId) {
+            // Single-video crawl (X-link ingest): fetch the watch page directly,
+            // no channel tabs involved. The page instance is not needed.
+            this.log?.info(`Trying to grab video ${videoId}.`)
+            const article = await YoutubeApiJsonParser.grabVideo(videoId, {
+                cookieString: config.cookieString,
+                requestHeaders: config.requestHeaders,
+            })
+            return [article] as TaskTypeResult<T, Platform.YouTube>
+        }
+
         const result = super._match_valid_url(url, YoutubeSpider)?.groups
-        if (!result) {
+        if (!result?.id) {
             throw new Error(`Invalid URL: ${url}`)
         }
         const { id } = result
         const _url = `${this.BASE_URL}@${id}`
-        const { task_type } = config
 
         if (!page) {
             throw new Error('YouTube spider requires a Page instance')
         }
 
-        if (task_type === 'article') {
-            this.log?.info('Trying to grab videos and shorts.')
-            const res = await YoutubeApiJsonParser.grabArticles(page, _url, {
-                hydrate_limit: config.hydrate_limit,
-                hydrate_concurrency: config.hydrate_concurrency,
-                hydrate_interval_time: config.hydrate_interval_time,
-                isArticleKnown: config.isArticleKnown,
-                isStoredPremierePending: config.isStoredPremierePending,
-                articleStateLookup: config.articleStateLookup,
-                cookieString: config.cookieString,
-                requestHeaders: config.requestHeaders,
-                cache: this.cache,
-            })
+        this.log?.info('Trying to grab videos and shorts.')
+        const res = await YoutubeApiJsonParser.grabArticles(page, _url, {
+            hydrate_limit: config.hydrate_limit,
+            hydrate_concurrency: config.hydrate_concurrency,
+            hydrate_interval_time: config.hydrate_interval_time,
+            isArticleKnown: config.isArticleKnown,
+            isStoredPremierePending: config.isStoredPremierePending,
+            articleStateLookup: config.articleStateLookup,
+            cookieString: config.cookieString,
+            requestHeaders: config.requestHeaders,
+            cache: this.cache,
+        })
 
-            return res as TaskTypeResult<T, Platform.YouTube>
-        }
-
-        throw new Error('Invalid task type')
+        return res as TaskTypeResult<T, Platform.YouTube>
     }
 }
 
@@ -121,6 +137,48 @@ namespace YoutubeApiJsonParser {
         thumbnail: string | null
         is_premiere_pending: boolean
         scheduled_start_at: number | null
+        owner_handle: string | null
+        owner_name: string | null
+        members_only: boolean
+    }
+
+    interface GrabVideoOptions {
+        cookieString?: string
+        requestHeaders?: Record<string, string>
+    }
+
+    const YOUTUBE_VIDEO_ID_RE = /^[A-Za-z0-9_-]{6,128}$/
+    // Watch pages of members-only videos report UNPLAYABLE/LOGIN_REQUIRED with this
+    // reason (hl=en is forced by addLocaleQuery, so the English wording is stable).
+    const MEMBERS_ONLY_REASON_RE = /members?[-\s]?only/i
+
+    /**
+     * Extract the video id from any single-video YouTube URL shape
+     * (watch?v=, /shorts/, /live/, youtu.be). Returns null for channel URLs.
+     */
+    export function parseVideoId(rawUrl: string): string | null {
+        let url: URL
+        try {
+            url = new URL(/^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`)
+        } catch {
+            return null
+        }
+        const hostname = url.hostname.toLowerCase()
+        const normalize = (value?: string | null) => (value && YOUTUBE_VIDEO_ID_RE.test(value) ? value : null)
+        if (hostname === 'youtu.be') {
+            return normalize(url.pathname.split('/').filter(Boolean)[0])
+        }
+        if (hostname !== 'youtube.com' && !hostname.endsWith('.youtube.com')) {
+            return null
+        }
+        if (url.pathname === '/watch') {
+            return normalize(url.searchParams.get('v'))
+        }
+        const parts = url.pathname.split('/').filter(Boolean)
+        if (['shorts', 'live', 'embed'].includes(parts[0] || '')) {
+            return normalize(parts[1])
+        }
+        return null
     }
 
     interface GrabArticlesOptions {
@@ -319,6 +377,26 @@ namespace YoutubeApiJsonParser {
                 },
             },
         }
+    }
+
+    function buildMembersOnlyFlagExtra(membersOnly: boolean): any {
+        return membersOnly ? { data: { members_only: true } } : null
+    }
+
+    /**
+     * Merge article extras shallowly by `data` key. Hydration used to replace the
+     * list-page extra with the premiere extra (`premiereExtra || article.extra`),
+     * which silently dropped the members_only flag on members-only premieres —
+     * exactly the content class that needs it. Later extras win per key.
+     */
+    function mergeArticleExtras(...extras: Array<any>): any {
+        const data: Record<string, any> = {}
+        for (const extra of extras) {
+            if (extra?.data && typeof extra.data === 'object') {
+                Object.assign(data, extra.data)
+            }
+        }
+        return Object.keys(data).length > 0 ? { data } : null
     }
 
     function isPremierePendingArticle(article: YoutubeArticle) {
@@ -548,13 +626,25 @@ namespace YoutubeApiJsonParser {
             liveDetails?.startTimestamp || liveDetails?.offlineSlate?.liveStreamOfflineSlateRenderer?.scheduledStartTime
         const scheduled_start_at = scheduledStartText ? dayjs(scheduledStartText).unix() || null : null
         const title = videoDetails?.title || textParser(microformat?.title)
-        const playabilityStatus = String(initialPlayerResponse?.playabilityStatus?.status || '')
+        const playability = initialPlayerResponse?.playabilityStatus
+        const playabilityStatus = String(playability?.status || '')
         const isUpcoming =
             Boolean(videoDetails?.isUpcoming) ||
             playabilityStatus === 'LIVE_STREAM_OFFLINE' ||
-            Boolean(initialPlayerResponse?.playabilityStatus?.liveStreamability)
+            Boolean(playability?.liveStreamability)
         const is_premiere_pending = Boolean(isUpcoming || isPremierePlaceholderTitle(title))
         const created_at = scheduled_start_at || (publishedAt ? dayjs(publishedAt).unix() : 0)
+        const ownerHandleMatch = String(microformat?.ownerProfileUrl || '').match(/@([^/?#]+)/)
+        // Members-only videos are UNPLAYABLE/LOGIN_REQUIRED for a non-member jar and
+        // explain it in the reason text ("Join this channel to get access to
+        // members-only content ..."). Require both so region locks etc. never flag.
+        const unplayable = playabilityStatus === 'UNPLAYABLE' || playabilityStatus === 'LOGIN_REQUIRED'
+        const reasonText = [
+            textParser(playability?.reason),
+            textParser(playability?.errorScreen?.playerErrorMessageRenderer?.reason),
+            textParser(playability?.errorScreen?.playerErrorMessageRenderer?.subreason),
+        ].join('\n')
+        const members_only = unplayable && MEMBERS_ONLY_REASON_RE.test(reasonText)
         return {
             created_at,
             title,
@@ -562,6 +652,9 @@ namespace YoutubeApiJsonParser {
             thumbnail,
             is_premiere_pending,
             scheduled_start_at,
+            owner_handle: ownerHandleMatch?.[1] || null,
+            owner_name: microformat?.ownerChannelName || null,
+            members_only,
         }
     }
 
@@ -626,7 +719,60 @@ namespace YoutubeApiJsonParser {
             content: buildContent(detail.title, detail.description) || article.content,
             has_media: Boolean(media && media.length > 0),
             media,
-            extra: (premiereExtra || article.extra) as YoutubeArticle['extra'],
+            // Merge instead of replace: the list-page members_only flag must survive
+            // detail hydration even when a premiere extra is built.
+            extra: mergeArticleExtras(article.extra, premiereExtra) as YoutubeArticle['extra'],
+        }
+    }
+
+    /**
+     * @param videoId YouTube video id from a watch/shorts/live URL
+     * @description grab a single video from its watch page (X-link ingest path).
+     * Builds the same article shape as the channel crawl, including premiere state
+     * and the members_only flag recovered from playabilityStatus.
+     */
+    export async function grabVideo(videoId: string, options: GrabVideoOptions = {}): Promise<YoutubeArticle> {
+        const watchUrl = `https://www.youtube.com/watch?v=${videoId}`
+        const headers = {
+            'accept-language': 'en-US,en;q=0.9',
+            'user-agent': options.requestHeaders?.['user-agent'] || UserAgent.CHROME,
+            cookie: options.cookieString?.trim() || '',
+        }
+        const detailUrl = addLocaleQuery(watchUrl)
+        let detail: YoutubeDetail
+        try {
+            const webpage = await HTTPClient.download_webpage(detailUrl, headers, { timeout: YOUTUBE_DETAIL_TIMEOUT_MS })
+            detail = detailParser(await webpage.text())
+            if (!detail.title && !detail.description) {
+                throw new Error('missing player response')
+            }
+        } catch {
+            // Bare HTTP occasionally gets a consent/bot shell without the player
+            // response; fall back to the curl impersonation path once.
+            const curlPage = await HTTPClient.download_webpage_curl(detailUrl, headers, {
+                timeout: YOUTUBE_DETAIL_TIMEOUT_MS,
+            })
+            detail = detailParser(await curlPage.text())
+        }
+        if (!detail.title && !detail.description) {
+            throw new Error(`Cannot find YouTube player response for ${videoId}`)
+        }
+        const media = mediaParser(detail.thumbnail)
+        const handle = detail.owner_handle
+        return {
+            platform: Platform.YouTube,
+            a_id: videoId,
+            u_id: handle || 'youtube',
+            username: detail.owner_name || handle || 'YouTube',
+            created_at: detail.created_at,
+            content: buildContent(detail.title, detail.description),
+            url: watchUrl,
+            type: ArticleTypeEnum.VIDEO,
+            ref: null,
+            has_media: media.length > 0,
+            media,
+            extra: mergeArticleExtras(buildPremiereExtra(detail), buildMembersOnlyFlagExtra(detail.members_only)),
+            u_avatar: null,
         }
     }
 

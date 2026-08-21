@@ -771,3 +771,170 @@ test('YouTube grabArticles retries a transient list fetch once before failing', 
         ;(HTTPClient as any).download_webpage = originalDownload
     }
 })
+
+test('YouTube spider matches single-video URLs (watch/shorts/live/youtu.be)', () => {
+    // Regression: X-link ingest dispatches scheduled runs with single watch URLs;
+    // the spider registry must resolve them instead of logging "Spider not found".
+    const cases = [
+        ['https://www.youtube.com/watch?v=o7VnR1w-5T4', 'o7VnR1w-5T4'],
+        ['https://www.youtube.com/watch?v=o7VnR1w-5T4&t=12s', 'o7VnR1w-5T4'],
+        ['https://m.youtube.com/watch?feature=share&v=o7VnR1w-5T4', 'o7VnR1w-5T4'],
+        ['https://www.youtube.com/shorts/NYnbjoDltqA', 'NYnbjoDltqA'],
+        ['https://www.youtube.com/live/JgnEGZMrp2M?si=u_EIx', 'JgnEGZMrp2M'],
+        ['https://youtu.be/pCIvwukJXqI?si=lmuiUkN1T1KKVt-s', 'pCIvwukJXqI'],
+    ] as const
+    for (const [url, videoId] of cases) {
+        expect(spiderRegistry.findByUrl(url)?.id).toBe('youtube')
+        expect(YoutubeApiJsonParser.parseVideoId(url)).toBe(videoId)
+    }
+    // Channel URLs still resolve to the channel path, never to a video crawl.
+    expect(spiderRegistry.findByUrl('https://www.youtube.com/@227SMEJ')?.id).toBe('youtube')
+    expect(YoutubeApiJsonParser.parseVideoId('https://www.youtube.com/@227SMEJ')).toBeNull()
+    expect(YoutubeApiJsonParser.parseVideoId('https://youtube.com/@chiharu_channel?si=abc')).toBeNull()
+})
+
+const membersOnlyDetailHtml = `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+    playabilityStatus: {
+        status: 'UNPLAYABLE',
+        reason: {
+            simpleText:
+                'Join this channel to get access to members-only content like this video, and other exclusive perks.',
+        },
+    },
+    videoDetails: {
+        title: '【otakatsu】アレ🎾開封【メン限】',
+        shortDescription: 'members only video',
+        thumbnail: {
+            thumbnails: [{ url: 'https://i.ytimg.com/vi/pCIvwukJXqI/maxresdefault.jpg', width: 1280 }],
+        },
+    },
+    microformat: {
+        playerMicroformatRenderer: {
+            publishDate: '2026-07-31',
+            ownerProfileUrl: 'http://www.youtube.com/@chiharu_channel',
+            ownerChannelName: '千春 Chiharu ちゃんねる',
+        },
+    },
+})};</script>`
+
+test('YouTube detailParser flags members-only watch pages and extracts the channel owner', () => {
+    const detail = YoutubeApiJsonParser.detailParser(membersOnlyDetailHtml)
+    expect(detail.members_only).toBe(true)
+    expect(detail.owner_handle).toBe('chiharu_channel')
+    expect(detail.owner_name).toBe('千春 Chiharu ちゃんねる')
+    expect(detail.title).toBe('【otakatsu】アレ🎾開封【メン限】')
+})
+
+test('YouTube detailParser does not flag unrelated unplayable videos as members-only', () => {
+    for (const [status, reason] of [
+        ['UNPLAYABLE', 'Video unavailable'],
+        ['LOGIN_REQUIRED', 'Sign in to confirm your age'],
+        ['LOGIN_REQUIRED', 'Sign in to confirm you’re not a bot'],
+    ] as const) {
+        const detailHtml = `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+            playabilityStatus: { status, reason: { simpleText: reason } },
+            videoDetails: { title: 'Some video' },
+            microformat: { playerMicroformatRenderer: { publishDate: '2026-08-01' } },
+        })};</script>`
+        expect(YoutubeApiJsonParser.detailParser(detailHtml).members_only).toBe(false)
+    }
+})
+
+test('YouTube grabVideo builds a members-only article from a single watch page', async () => {
+    const originalDownload = HTTPClient.download_webpage
+    const requestedUrls: Array<string> = []
+    ;(HTTPClient as any).download_webpage = async (url: string) => {
+        requestedUrls.push(url)
+        return new Response(membersOnlyDetailHtml)
+    }
+
+    try {
+        const article = await YoutubeApiJsonParser.grabVideo('pCIvwukJXqI', {})
+        expect(requestedUrls.some((url) => url.includes('/watch?') && url.includes('pCIvwukJXqI'))).toBeTrue()
+        expect(article.a_id).toBe('pCIvwukJXqI')
+        expect(article.u_id).toBe('chiharu_channel')
+        expect(article.username).toBe('千春 Chiharu ちゃんねる')
+        expect(article.url).toBe('https://www.youtube.com/watch?v=pCIvwukJXqI')
+        expect(article.content).toContain('【otakatsu】アレ🎾開封【メン限】')
+        expect((article.extra as any)?.data?.members_only).toBe(true)
+        expect(article.media?.[0]?.type).toBe('video_thumbnail')
+    } finally {
+        ;(HTTPClient as any).download_webpage = originalDownload
+    }
+})
+
+test('YouTube hydration keeps the list-page members-only flag when building premiere extras', async () => {
+    // Regression: hydrateArticle used `premiereExtra || article.extra`, silently
+    // dropping members_only on members-only premieres (メン限 scheduled streams).
+    const originalDownload = HTTPClient.download_webpage
+    const membersOnlyPremiereVideos = {
+        header: officialChannelHeaderFixture,
+        richGridRenderer: {
+            contents: [
+                {
+                    richItemRenderer: {
+                        content: {
+                            videoRenderer: {
+                                videoId: 'members-premiere',
+                                title: { runs: [{ text: '【歌枠】Members Stream' }] },
+                                publishedTimeText: { simpleText: 'Upcoming' },
+                                thumbnail: {
+                                    thumbnails: [
+                                        { url: 'https://i.ytimg.com/vi/members-premiere/hqdefault.jpg', width: 480 },
+                                    ],
+                                },
+                                badges: [
+                                    {
+                                        badgeViewModel: {
+                                            badgeText: 'Members only',
+                                            badgeStyle: 'BADGE_STYLE_TYPE_MEMBERS_ONLY',
+                                        },
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                },
+            ],
+        },
+    }
+    const upcomingDetailHtml = `<script>var ytInitialPlayerResponse = ${JSON.stringify({
+        playabilityStatus: { status: 'LIVE_STREAM_OFFLINE' },
+        videoDetails: {
+            title: '【歌枠】Members Stream',
+            isUpcoming: true,
+            thumbnail: {
+                thumbnails: [{ url: 'https://i.ytimg.com/vi/members-premiere/maxresdefault.jpg', width: 1280 }],
+            },
+        },
+        microformat: {
+            playerMicroformatRenderer: {
+                liveBroadcastDetails: { startTimestamp: '2026-08-30T11:00:00Z' },
+            },
+        },
+    })};</script>`
+    ;(HTTPClient as any).download_webpage = async (url: string) => {
+        if (url.includes('/videos?')) {
+            return new Response(buildYoutubeInitialData(membersOnlyPremiereVideos))
+        }
+        if (url.includes('/shorts?')) {
+            return new Response(buildYoutubeInitialData({ header: officialChannelHeaderFixture }))
+        }
+        return new Response(upcomingDetailHtml)
+    }
+
+    try {
+        const articles = await YoutubeApiJsonParser.grabArticles(buildYoutubePage(), 'https://www.youtube.com/@227SMEJ', {
+            hydrate_limit: 8,
+            hydrate_concurrency: 1,
+            isArticleKnown: () => true,
+            isStoredPremierePending: () => true,
+        })
+
+        const premiere = articles.find((article) => article.a_id === 'members-premiere')
+        expect((premiere?.extra as any)?.data?.premiere?.pending).toBe(true)
+        expect((premiere?.extra as any)?.data?.members_only).toBe(true)
+    } finally {
+        ;(HTTPClient as any).download_webpage = originalDownload
+    }
+})
