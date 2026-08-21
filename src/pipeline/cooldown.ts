@@ -70,12 +70,48 @@ export function shouldRetry(klass: CrawlErrorClass, platform?: string): boolean 
   return !NO_RETRY.has(klass)
 }
 
+export interface PersistedCooldown {
+  /** absolute expiry timestamp (ms); an expired row never revives the cooldown */
+  expiresAt: number
+  classification: CrawlErrorClass
+  /** 2^n backoff level; survives expiry in memory, so it is persisted too */
+  escalation: number
+}
+
+/** persistent backing for CooldownMap; memory stays the runtime master copy */
+export interface CooldownStore {
+  load(): Array<{ key: string } & PersistedCooldown>
+  save(key: string, entry: PersistedCooldown): void
+  remove(key: string): void
+}
+
+export interface CooldownMapOptions {
+  now?: () => number
+  /** service_state backing (pipeline/service-state.ts): write-through on hit/succeed, rehydrate at construction */
+  store?: CooldownStore
+}
+
 export class CooldownMap {
   private entries = new Map<string, { expiresAt: number; classification: CrawlErrorClass }>()
   private escalations = new Map<string, number>()
   private lastMessage = new Map<string, string>()
+  private readonly now: () => number
+  private readonly store?: CooldownStore
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(options: CooldownMapOptions | (() => number) = {}) {
+    const opts = typeof options === 'function' ? { now: options } : options
+    this.now = opts.now ?? Date.now
+    this.store = opts.store
+    // rehydrate: live cooldowns resume with their absolute expiry; expired
+    // rows never revive the cooldown but still restore the backoff level,
+    // matching the in-memory semantics where escalations outlive entries
+    for (const row of this.store?.load() ?? []) {
+      this.escalations.set(row.key, row.escalation)
+      if (row.expiresAt > this.now()) {
+        this.entries.set(row.key, { expiresAt: row.expiresAt, classification: row.classification })
+      }
+    }
+  }
 
   check(key: string): { cooled: boolean; classification?: CrawlErrorClass; until?: number } {
     const entry = this.entries.get(key)
@@ -102,7 +138,9 @@ export class CooldownMap {
     const escalation = Math.min(this.escalations.get(key) ?? 0, 3)
     const total = Math.min(duration * 2 ** escalation, 6 * 60 * 60 * 1000)
     this.escalations.set(key, escalation + 1)
-    this.entries.set(key, { expiresAt: this.now() + total, classification })
+    const entry = { expiresAt: this.now() + total, classification }
+    this.entries.set(key, entry)
+    this.store?.save(key, { ...entry, escalation: escalation + 1 })
     return total
   }
 
@@ -114,5 +152,6 @@ export class CooldownMap {
   succeed(key: string): void {
     this.entries.delete(key)
     this.escalations.delete(key)
+    this.store?.remove(key)
   }
 }

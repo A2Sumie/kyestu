@@ -24,6 +24,7 @@
 ## 留观（刻意不动）
 - QQ 发送仅 2 次内联重试（生产 60s·2ⁿ 退避）
 - digest_buffer 纯内存（生产 DB 持久化）
+- ~~冷却/会话健康板纯内存，重启即风控清零~~ ✅ 已解（2026-08-21）：CooldownMap 与 SessionHealthBoard 写穿 service_state 表（`pipeline/service-state.ts`，键 `cooldown:<entry>:<url>` / `session-health:<key>`），fiber 重建与进程重启后在组件 apply 内同步水合；冷却存绝对截止时间戳，过期不复活，退避等级随条目存续
 - sendVideo 不走 TargetRuntime 策略
 - ~~POST /api/reload 与 watch 并发未串行化~~ ✅ 已解（2026-08-21）：Loader.reconcile 入口 promise-chain 串行化，后到者排队不交错；FAILED entry 经 POST /api/reload?force=1 显式复位（默认行为不变，watch 永不自动重试 FAILED）
 

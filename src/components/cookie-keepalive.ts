@@ -4,6 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { Component } from '../core/types'
 import type { Bus } from './bus'
+import type { KyestuDb } from './db'
 import type { BrowserSessionPool, BrowserPageRequest } from './browser-pool'
 import {
   SessionHealthBoard,
@@ -12,6 +13,7 @@ import {
   DEFAULT_STAGGER_MAX_MS,
   type SessionHealthSnapshot,
 } from '../pipeline/session-health'
+import { ServiceStateStore, sessionHealthStore } from '../pipeline/service-state'
 import { ExpiringLatch, checkupJar, type JarCheckup } from '../pipeline/jar-checkup'
 
 /**
@@ -22,7 +24,8 @@ import { ExpiringLatch, checkupJar, type JarCheckup } from '../pipeline/jar-chec
  * 1. Reactive coeffects (§3.2.2, Def 25/26; realized as fiber.inject +
  *    Root.notify, Table 2 rows "d : 𝔇Γ → fiber.inject" and
  *    "L-Leave refresh marking the fiber UNLOADING"):
- *    The component declares `inject: ['bus', 'browser']`. While browser-pool
+ *    The component declares `inject: ['db', 'bus', 'browser']` (db backs the
+ *    board's write-through persistence via service_state). While browser-pool
  *    is not ACTIVE the fiber stays INACTIVE — "a component whose dependency
  *    is unavailable stays inactive until it appears, without erroring"
  *    (§6.1 case study wording). A pool rebuild (config change) swaps the
@@ -418,8 +421,9 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
   // §3.2.2 / Def 25: the declared coeffect specification d = {bus, browser}.
   // Satisfaction (Def 24 predicate σ ⊧ d) gates activation; notify (Def 26)
   // reloads this fiber when the browser provider fiber changes identity.
-  inject: ['bus', 'browser'],
+  inject: ['db', 'bus', 'browser'],
   apply: (ctx, config) => {
+    const db = ctx.get<KyestuDb>('db')!
     const browser = ctx.get<BrowserSessionPool>('browser') ?? null
     const bus = ctx.get<Bus>('bus')!
     const jobs = config.jobs ?? []
@@ -427,10 +431,15 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
     // §3.3.1: the board is a shared mutable state encoded as a coeffect
     // value; every transition is mirrored into the bus event channel (the
     // 8-17 lesson: state changes nobody sees are state changes nobody acts on)
+    // and written through to service_state, so a quarantine survives fiber
+    // rebuilds and process restarts — a dead session must STOP BEING TOUCHED
+    // (8-16 lesson), including right after a restart. The constructor
+    // rehydrates synchronously, before ctx.set publishes the board below.
     const board = new SessionHealthBoard({
       brokenThreshold: config.broken_threshold ?? DEFAULT_BROKEN_THRESHOLD,
       resumeAfterMs: config.resume_after_seconds ? config.resume_after_seconds * 1000 : 0,
       onTransition: (event) => bus.emit('session', { kind: 'transition', ...event }),
+      store: sessionHealthStore(new ServiceStateStore(db)),
     })
     // ctx.set is itself an effect with an inverse (§5.1.2 Algorithm 2): the
     // board binding is withdrawn automatically when this fiber unloads, so

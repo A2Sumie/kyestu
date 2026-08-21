@@ -3,6 +3,7 @@ import type { Component } from '../core/types'
 import type { KyestuDb } from './db'
 import { ArticleStore } from '../pipeline/articles'
 import { CooldownMap, classifyCrawlError, shouldRetry } from '../pipeline/cooldown'
+import { ServiceStateStore, cooldownStore } from '../pipeline/service-state'
 import { nextRunAt, resolveCrawlerSchedule } from '../pipeline/schedule'
 import { LiveRelay } from '../pipeline/live-relay'
 import { NodeHandle, nodeKey } from '../loader/loader'
@@ -108,7 +109,10 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const browser = ctx.get<BrowserSessionPool>('browser') ?? null
       const fiber = ctx.fiber!
       const entryId = String(config.__id)
-      const cooldowns = new CooldownMap()
+      // cooldowns persist to service_state scoped by entry id: per-target
+      // isolation (full-url keys) carries across rebuilds/restarts, and an
+      // expired cooldown never revives (absolute expiry, compared at load)
+      const cooldowns = new CooldownMap({ store: cooldownStore(new ServiceStateStore(db), entryId) })
       const platform = kind.replace(/^x-list$/, 'x')
       // session-health feedback key (2c): the crawler participates in the
       // keepalive loop only when its config names a session or a jar; the

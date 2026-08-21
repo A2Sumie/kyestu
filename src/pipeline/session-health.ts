@@ -33,6 +33,8 @@
 
 export type SessionHealthState = 'fresh' | 'suspect' | 'broken' | 'quarantined'
 
+const HEALTH_STATES: readonly SessionHealthState[] = ['fresh', 'suspect', 'broken', 'quarantined']
+
 export interface GuardVerdict {
   blocked: boolean
   reason?: string
@@ -68,6 +70,19 @@ export interface SessionHealthBoardOptions {
   now?: () => number
   /** transition sink (the bus emit in the component); kept injectable for tests */
   onTransition?: (event: SessionHealthTransitionEvent) => void
+  /**
+   * persistent backing (service_state; see pipeline/service-state.ts). When
+   * present the constructor rehydrates slots from it and every mutation is
+   * written through, so a quarantined session stays untouched across fiber
+   * rebuilds and process restarts (the 8-16/8-17 lesson below).
+   */
+  store?: SessionHealthStore
+}
+
+/** persistent backing for the board; memory stays the runtime master copy */
+export interface SessionHealthStore {
+  load(): SessionHealthSnapshot[]
+  save(snapshot: SessionHealthSnapshot): void
 }
 
 interface Slot {
@@ -129,14 +144,27 @@ export class SessionHealthBoard {
   private readonly resumeAfterMs: number
   private readonly now: () => number
 
+  private readonly onTransition?: (event: SessionHealthTransitionEvent) => void
+  private readonly store?: SessionHealthStore
+
   constructor(options: SessionHealthBoardOptions = {}) {
     this.brokenThreshold = Math.max(1, Math.trunc(options.brokenThreshold ?? 2))
     this.resumeAfterMs = Math.max(0, options.resumeAfterMs ?? 0)
     this.now = options.now ?? Date.now
     this.onTransition = options.onTransition
+    this.store = options.store
+    // rehydrate before the board is published (the component ctx.set's it
+    // right after construction), so consumers never observe a lost quarantine
+    for (const snapshot of this.store?.load() ?? []) {
+      const { key, ...slot } = snapshot
+      if (!key || !HEALTH_STATES.includes(slot.state)) continue
+      this.slots.set(key, { ...freshSlot(), ...slot })
+    }
   }
 
-  private readonly onTransition?: (event: SessionHealthTransitionEvent) => void
+  private persist(key: string, slot: Slot): void {
+    this.store?.save({ key, ...slot })
+  }
 
   private slot(key: string): Slot {
     let slot = this.slots.get(key)
@@ -183,12 +211,16 @@ export class SessionHealthBoard {
       slot.lastError = null
       // success is the strongest recovery signal: any degraded state heals
       this.transition(slot, key, 'fresh', 'consumer reported success')
+      this.persist(key, slot)
       return
     }
     slot.consecutiveFailures += 1
     slot.lastFailureAt = this.now()
     slot.lastError = error instanceof Error ? error.message : error === undefined ? null : String(error)
-    if (slot.state === 'quarantined') return // already at the floor
+    if (slot.state === 'quarantined') {
+      this.persist(key, slot)
+      return // already at the floor
+    }
     const next = escalate(slot.state, slot.consecutiveFailures, this.brokenThreshold)
     if (next === 'broken') {
       this.transition(slot, key, 'broken', slot.lastError ?? undefined)
@@ -196,6 +228,7 @@ export class SessionHealthBoard {
     } else if (next !== slot.state) {
       this.transition(slot, key, next, slot.lastError ?? undefined)
     }
+    this.persist(key, slot)
   }
 
   /** manual lift of a quarantine (ops action); resets to fresh. */
@@ -206,10 +239,12 @@ export class SessionHealthBoard {
       slot.autoResumeAt = null
       slot.reason = null
       this.transition(slot, key, 'fresh', 'manual resume')
+      this.persist(key, slot)
       return
     }
     // resume on a non-quarantined slot is an idempotent no-op reset
     slot.consecutiveFailures = 0
+    this.persist(key, slot)
   }
 
   snapshot(): SessionHealthSnapshot[] {
@@ -226,6 +261,7 @@ export class SessionHealthBoard {
     slot.quarantinedAt = this.now()
     slot.reason = reason
     slot.autoResumeAt = this.resumeAfterMs > 0 ? this.now() + this.resumeAfterMs : null
+    this.persist(key, slot)
   }
 
   private maybeAutoResume(slot: Slot, key: string): void {
@@ -235,5 +271,6 @@ export class SessionHealthBoard {
     slot.autoResumeAt = null
     slot.reason = null
     this.transition(slot, key, 'fresh', 'auto resume window elapsed')
+    this.persist(key, slot)
   }
 }
