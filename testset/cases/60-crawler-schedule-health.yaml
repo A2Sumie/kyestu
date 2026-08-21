@@ -85,7 +85,7 @@ cases:
     given: stories 抓取挂死
     when: 12s 后
     then: stories 放弃，posts 结果正常返回
-  - id: HC-07
+  - id: HC-08
     title: 内容新鲜度 TTL：YT premiere 600s 复查；website mutable feed 24/48/12h；photo archive 72h
     layer: unit
     anchor: youtube.ts:761-772, website.ts:17-25

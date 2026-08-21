@@ -1,0 +1,30 @@
+# 最小 compose 示例：build + env + 持久化卷 + restart。
+# 用法：cp docker-compose.example.yml docker-compose.yml，备好 kyestu.config.yaml 与 .env 后 `docker compose up -d`。
+#
+# 持久化约定：应用态集中在 /app/data（named volume，镜像内已预建并 chown 给 bun 用户）：
+#   DATABASE_PATH=/app/data/data.db   —— SQLite 主库（文章/出站幂等/service_state 风控态）
+#   CACHE_DIR=/app/data/cache         —— 媒体缓存 + 浏览器 profile
+#   cookie 文件                       —— 把配置里各 crawler 的 cookie_file 指到 /app/data/cookies/ 下
+# 配置文件本身以只读单文件挂载（改配置后 reload 由文件 watch 自动触发）。
+services:
+  kyestu:
+    build: .
+    platform: linux/amd64 # Chrome 钉版 .deb 仅 amd64；arm64 主机经 Rosetta 运行
+    restart: unless-stopped
+    environment:
+      ONEBOT_HTTP_URL: ${ONEBOT_HTTP_URL:?set ONEBOT_HTTP_URL in .env}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # 控制面鉴权：必须与配置里 api 的 secret 同源，HEALTHCHECK 才能通过
+      KYESTU_API_SECRET: ${KYESTU_API_SECRET:-}
+      DATABASE_PATH: /app/data/data.db
+      CACHE_DIR: /app/data/cache
+      # 如需跨容器重建保留 DB 恢复 marker，指到卷内：
+      # KYESTU_DB_RECOVERY_MARKER: /app/data/db-recovered.json
+    volumes:
+      - ./kyestu.config.yaml:/app/kyestu.config.yaml:ro
+      - kyestu-data:/app/data
+    ports:
+      - "3000:3000"
+
+volumes:
+  kyestu-data:

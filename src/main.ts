@@ -53,7 +53,7 @@ async function main() {
     const present = new Set(entries.map((e) => e.id))
     const infra = INFRA_DEFAULTS.filter((e) => !present.has(e.id))
     const resolved = entries.map((entry) => ({ ...entry, with: resolveEnvStrings(entry.with ?? {}) as Record<string, any> }))
-    const userApi = entries.find((e) => e.id === 'api')
+    const userApi = resolved.find((e) => e.id === 'api')
     const apiEntry: EntryDef = {
       id: 'api',
       use: 'app/api',

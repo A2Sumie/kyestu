@@ -116,3 +116,55 @@ test('notify is realm-scoped: isolated and default consumers resolve independent
   expect(c2.state).toBe('ACTIVE')
   await root.dispose()
 })
+
+// review notes-code D3-3: an isolated context is a coeffect namespace view,
+// not an effect owner — effect() on it attributes to the nearest enclosing
+// fiber's accumulator. Paper-consistent (isolation scopes keys, not effect
+// ownership); pinned so a future "managed realms" change can't silently
+// alter teardown boundaries.
+test('isolate x effect: effects on a bare isolated context belong to the enclosing fiber', async () => {
+  const root = createRoot()
+  const order: string[] = []
+  const iso = root.ctx.isolate('cfg', 'rA')
+  iso.effect(() => {
+    order.push('apply')
+    return () => void order.push('inverse')
+  })
+  expect(order).toEqual(['apply'])
+  await root.dispose()
+  expect(order).toEqual(['apply', 'inverse'])
+})
+
+test('isolate x effect: a fiber created under an isolated context owns its effects', async () => {
+  const root = createRoot()
+  const order: string[] = []
+  const fiber = root.ctx.isolate('cfg', 'rB').use({
+    name: 'child',
+    apply: (ctx) => {
+      ctx.effect(() => {
+        order.push('child-apply')
+        return () => void order.push('child-inverse')
+      })
+    },
+  })
+  await root.idle()
+  expect(order).toEqual(['child-apply'])
+  await fiber.dispose()
+  expect(order).toEqual(['child-apply', 'child-inverse'])
+  await root.dispose()
+  expect(order).toEqual(['child-apply', 'child-inverse'])
+})
+
+// review notes-code D3-4 / decisions D18 §6: realm is a bare string and two
+// entries naming the same realm share ONE key space. That is the current
+// contract (prefix realm names with the entry id to opt out); pinned so the
+// hazard is at least visible to refactors.
+test('isolate: identical realm strings across contexts share the key space (D18 §6)', async () => {
+  const root = createRoot()
+  const ctxA = root.ctx.isolate('cfg', 'shared-realm')
+  const ctxB = root.ctx.isolate('cfg', 'shared-realm')
+  ctxA.set('cfg', 1)
+  expect(ctxB.get<number>('cfg')).toBe(1) // reads cross over
+  expect(() => ctxB.set('cfg', 2)).toThrow() // single-source discipline fires across entries
+  await root.dispose()
+})

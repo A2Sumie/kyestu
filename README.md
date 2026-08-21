@@ -27,6 +27,34 @@ bun run start kyestu.config.yaml   # = bun src/main.ts
 
 行为：infra 缺省自动补齐（`./data.db`、`./cache`）；配置文件 watch 自动 reconcile；HTTP 控制面 `/api/status`、`POST /api/reload`（Bearer，`?force=1` 可复位 FAILED entry）。需要 Bun >= 1.3；QQ 发送需要同文件系统的 OneBot v11 端点（NapCat 等，`ONEBOT_HTTP_URL`）。
 
+## 部署（Docker）
+
+```bash
+docker build -t kyestu .   # 镜像为 linux/amd64（Chrome 钉版 .deb 仅 amd64）；arm64 主机加 --platform linux/amd64
+docker run -d --name kyestu --restart unless-stopped \
+  -e ONEBOT_HTTP_URL=http://<napcat>:3001 \
+  -e KYESTU_API_SECRET=<random> \
+  -e DATABASE_PATH=/app/data/data.db -e CACHE_DIR=/app/data/cache \
+  -v "$PWD/kyestu.config.yaml:/app/kyestu.config.yaml:ro" \
+  -v kyestu-data:/app/data \
+  -p 3000:3000 kyestu
+```
+
+compose 见 [docker-compose.example.yml](docker-compose.example.yml)（build + env + volume + restart 的最小样例）。
+
+需要持久化的路径（**不**用 VOLUME 指令强声明，避免匿名卷惊喜，按需挂载）：
+
+| 路径 | 来源 | 内容 |
+|---|---|---|
+| `/app/kyestu.config.yaml` | CMD 参数 | 配置，建议只读挂载；watch 自动 reconcile |
+| `$DATABASE_PATH`（默认 `/app/data.db`） | env | SQLite 主库：文章/出站幂等/service_state 风控态 |
+| `$CACHE_DIR`（默认 `/app/cache`） | env | 媒体缓存 + 浏览器 profile |
+| 各 `cookie_file` | 配置内路径 | 平台 cookie；指到挂载卷内 |
+| `$KYESTU_DB_RECOVERY_MARKER`（默认 `/tmp/kyestu/db-recovered.json`） | env | B站 DB 恢复 marker，默认在容器 tmp 层、重建即丢；需保留就指到卷内 |
+
+健康检查：镜像内置 `HEALTHCHECK` 打 `/api/status`。若配置了 api secret，**必须经 `KYESTU_API_SECRET` env 注入**（配置里写 `secret: env:KYESTU_API_SECRET`），健康检查才能带同一个 Bearer；secret 直接写死在配置文件里则健康检查恒 401，此时改用 `docker inspect --format '{{json .State.Health}}' kyestu` 观察改为进程级判断，或自行覆盖 `--health-cmd`。注意 200 只证明控制面在服务——FAILED fiber 也返回 200，fiber 健康需对 payload 的 `state`/`taints` 做外部告警。
+
+
 ## 测试
 
 ```bash

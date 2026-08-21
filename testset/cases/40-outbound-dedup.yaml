@@ -78,7 +78,7 @@ cases:
     when: checkShortVideoCrossPlatformDuplicate 等
     then: 三级检查按锚点命中
   - id: OB-12
-    title: >2h 旧文章跳过；errorCounter≥3 标 ForwardBy 放弃
+    title: '>2h 旧文章跳过；errorCounter≥3 标 ForwardBy 放弃'
     layer: send
     anchor: forwarder-manager.ts:2360, 3104-3127
     given: 3h 前文章 + 连续 3 次发送失败的文章

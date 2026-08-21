@@ -36,10 +36,10 @@ cases:
     when: 第 11 次调用
     then: 直接 fallback 不请求；30min 后半开试一次；新系统以 provider 健康态实现同等参数
   - id: PR-06
-    title: env: 前缀密钥解析
+    title: 'env: 前缀密钥解析'
     layer: unit
     anchor: middleware/processor/base.ts:13-28
-    given: api_key: env:FOO
+    given: 'api_key: env:FOO'
     when: 创建 processor
     then: 从环境变量读取；缺失时报错路径明确
   - id: PR-07

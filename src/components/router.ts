@@ -36,8 +36,17 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
     const queueStore = routerQueueStore(new ServiceStateStore(db), String((config as { __id?: unknown }).__id ?? 'router'))
     const queue: QueuedEvent[] = []
     let draining = false
+    // witness discipline (D18 §1): the inverse must truly stop this fiber's
+    // side effects. An in-flight drain may outlive the inverse and otherwise
+    // persist through a closed db (ghost write past the runtime's generation
+    // guard — the raw db handle bypasses it). Skipping post-teardown persists
+    // loses nothing: every queue mutation persists synchronously, so the last
+    // pre-teardown persist already captured the final state.
+    let alive = true
 
-    const persistQueue = (): void => queueStore.save(queue.map((item) => item.event))
+    const persistQueue = (): void => {
+      if (alive) queueStore.save(queue.map((item) => item.event))
+    }
 
     /** returns true when a matched target fiber is not up yet (boot/reload window) and the event must stay queued */
     const dispatch = async (event: ArticleEvent): Promise<boolean> => {
@@ -126,6 +135,7 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
     }, Math.max(50, config.retry_interval_ms ?? 1000))
     if (queue.length) void drain()
     return () => {
+      alive = false
       off()
       clearInterval(sweep)
     }
