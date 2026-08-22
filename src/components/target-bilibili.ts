@@ -7,6 +7,7 @@ import { TargetRuntime, TARGET_RUNTIME_KNOWN_WITH_KEYS } from '../pipeline/targe
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
 import { ShortVideoDedup } from '../pipeline/short-video-dedup'
 import { uploadVideo } from '../pipeline/biliup'
+import { convertXHashtagsToBiliFormat } from '../pipeline/bili-hashtag'
 import type { RenderedPayload, SendInput, TargetApi } from '../types/api'
 
 /** Bilibili target: text/photo dynamics + video upload (biliup) with X-teaser pairing. */
@@ -188,7 +189,9 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
       return SUPPRESS_MEMBERS_ONLY_RE.test(haystack) ? '会员限定内容' : null
     }
 
-    const rawSend = async (input: SendInput, text: string): Promise<void> => {
+    const rawSend = async (input: SendInput, rawText: string): Promise<void> => {
+      // Sender gate: X hashtags go out to Bilibili in the paired #tag# form.
+      const text = convertXHashtagsToBiliFormat(rawText)
       const aKey = articleKey(input.article.platform as any, input.article.a_id)
       const key = outboundKey({
         crawler: input.route.crawler,

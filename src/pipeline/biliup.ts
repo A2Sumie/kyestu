@@ -1,4 +1,5 @@
 import { spawn } from 'child_process'
+import { convertXHashtagsToBiliFormat } from './bili-hashtag'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -131,8 +132,13 @@ export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput
     writeFileSync(cookiePath, JSON.stringify(cookieDoc, null, 2))
 
     const timeZone = config.timezone ?? 'Asia/Tokyo'
-    const title = truncateCodePoints(renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone), 80)
-    const desc = renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article, timeZone)
+    // X hashtags reach Bilibili in the paired #tag# form; convert at this output
+    // boundary so both templated and default metadata are covered.
+    const title = truncateCodePoints(
+      convertXHashtagsToBiliFormat(renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone)),
+      80,
+    )
+    const desc = convertXHashtagsToBiliFormat(renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article, timeZone))
 
     const args = [
       helperPath,
