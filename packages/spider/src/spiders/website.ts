@@ -48,6 +48,10 @@ interface WebsiteDetailPayload {
     member?: string | null
     media: Array<GenericMediaInfo>
     uAvatar?: string | null
+    // News detail pages are shared by the public NEWS tab and the FC NEWS tab;
+    // these markers from the rendered page are the category authority (see
+    // resolveNewsDetailFeed). Non-news feeds leave this unset.
+    newsMarkers?: NewsDetailMarkers | null
     extraData?: Record<string, any>
 }
 
@@ -496,12 +500,6 @@ function websiteErrorMessage(error: unknown) {
     return error instanceof Error ? error.message : String(error)
 }
 
-function isAuthOrRateLimitWebsiteError(error: unknown) {
-    return /login|csrf|cookie|session expired|challenge|checkpoint|rate limit|too many requests|temporarily blocked|forbidden|401|403|429/i.test(
-        websiteErrorMessage(error),
-    )
-}
-
 function isTransientWebsiteError(error: unknown) {
     return /timeout|timed out|navigation|econnreset|socket hang up|network|fetch failed|temporarily unavailable|bad gateway|service unavailable|net::err|aborted/i.test(
         websiteErrorMessage(error),
@@ -678,21 +676,6 @@ function hasExplicitTime(dateText?: string | null): boolean {
     return /\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(value) || /\b\d{1,2}時(?:\d{1,2}分?)?\b/.test(value)
 }
 
-function resolveAbsoluteUrl(url: string, value?: string | null): string | null {
-    if (!value) {
-        return null
-    }
-    try {
-        return new URL(value, url).href
-    } catch {
-        return null
-    }
-}
-
-function parseDateToUnix(dateText?: string | null): number {
-    return resolveWebsiteArticleTime(dateText, 'crawl_observed').createdAt
-}
-
 function isOperatorAuthoredFeed(feed: FeedKind) {
     return !['official-blog', 'photo'].includes(feed)
 }
@@ -761,6 +744,64 @@ function tryParseWebsiteUrl(url: string): URL | null {
 
 function isNewsDetail(pathname: string) {
     return /^\/s\/n110\/news\/detail\/[^/?#]+$/i.test(pathname)
+}
+
+type NewsFeedKind = Extract<FeedKind, 'fc-news' | 'official-news'>
+
+// News detail pages (/s/n110/news/detail/<id>) are shared by the public NEWS tab
+// and the FC NEWS tab; the detail URL carries no category, but the rendered page
+// does (verified 2026-09-28 on nanabunnonijyuuni-mobile.com):
+//   official: <title>NEWS | 22/7(ナナブンノニジュウニ)</title> + legacy #infoDetail* template
+//   fc:       <title>{title} | 22/7ファンクラブ</title> + .section-article template
+// So the detail-page marker is the classification authority for news articles and
+// the crawl URL (list tab / detail link) only supplies a fallback when the page
+// carries no marker at all.
+export interface NewsDetailMarkers {
+    documentTitle?: string | null
+    template?: 'fc' | 'public' | null
+}
+
+const NEWS_FC_TITLE_MARKER = '22/7ファンクラブ'
+const NEWS_OFFICIAL_TITLE_MARKER = '22/7(ナナブンノニジュウニ)'
+
+// Pure mirror of the in-page marker collection in extractNewsDetail (used by
+// fixture-driven tests); keep the signal order in sync with that evaluate block.
+export function readNewsDetailMarkers(html: string): NewsDetailMarkers {
+    const documentTitle = (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+    let template: 'fc' | 'public' | null = null
+    if (/<[a-z][^>]*class="[^"]*\b(?:section-article|article-content)\b/i.test(html)) {
+        template = 'fc'
+    } else if (/<[a-z][^>]*id="(?:infoDetail|infoCaption)"/i.test(html)) {
+        template = 'public'
+    }
+    return {
+        documentTitle: documentTitle || null,
+        template,
+    }
+}
+
+// Title suffix wins over template family; the list/URL-derived feed is only a
+// fallback. Both signals agreed on every page verified so far.
+export function resolveNewsDetailFeed(
+    markers: NewsDetailMarkers | null | undefined,
+    fallback: NewsFeedKind,
+): NewsFeedKind {
+    const title = markers?.documentTitle || ''
+    if (title.includes(NEWS_FC_TITLE_MARKER)) {
+        return 'fc-news'
+    }
+    if (title.includes(NEWS_OFFICIAL_TITLE_MARKER)) {
+        return 'official-news'
+    }
+    if (markers?.template === 'fc') {
+        return 'fc-news'
+    }
+    if (markers?.template === 'public') {
+        return 'official-news'
+    }
+    return fallback
 }
 
 function isTicketDetail(pathname: string) {
@@ -835,6 +876,11 @@ function extractArticleId(config: FeedConfig, detailUrl: string) {
         switch (config.feed) {
             case 'fc-news':
             case 'official-news':
+            // Both news feeds share one id space: a news detail page is served for
+            // both categories and the URL carries no category. The shared bare id +
+            // the global per-platform dedup lookup guarantee an article is emitted
+            // exactly once; its real category (detail-page marker) wins over the
+            // list/URL-derived one at build time (see buildWebsiteArticle).
             case 'ticket':
             case 'radio':
             case 'movie':
@@ -889,7 +935,18 @@ export function buildWebsiteArticle(
     detail: WebsiteDetailPayload,
     options?: WebsiteBuildOptions,
 ): GenericArticle<Platform.Website> {
-    const articleId = options?.articleId || extractArticleId(config, options?.detailUrl || detailUrl)
+    // Classification rule for news articles (fc-news / official-news): the detail
+    // page's own marker decides the category ("detail-derived category wins over
+    // list-derived") — the crawl URL only supplies the fallback. Both news feeds
+    // share the bare article-id space (extractArticleId) and dedup is global per
+    // platform, so the first successful fetch classifies and stores the article
+    // exactly once; any later discovery through the other feed is skipped as
+    // already known and can never re-label or duplicate it.
+    const effectiveConfig =
+        config.feed === 'fc-news' || config.feed === 'official-news'
+            ? FEED_CONFIGS[resolveNewsDetailFeed(detail.newsMarkers, config.feed)]
+            : config
+    const articleId = options?.articleId || extractArticleId(effectiveConfig, options?.detailUrl || detailUrl)
     const finalUrl = options?.detailUrl || detailUrl
     const title = cleanText(detail.title || listItem.title)
     const summary = cleanText(listItem.summary)
@@ -899,14 +956,14 @@ export function buildWebsiteArticle(
     const member = cleanText(detail.member || listItem.member) || null
     const time = resolveWebsiteArticleTime(
         detail.dateText || listItem.dateText,
-        isOperatorAuthoredFeed(config.feed) ? 'estimated_publish' : 'crawl_observed',
+        isOperatorAuthoredFeed(effectiveConfig.feed) ? 'estimated_publish' : 'crawl_observed',
     )
 
     return {
         platform: Platform.Website,
         a_id: articleId,
-        u_id: config.u_id,
-        username: member || config.label,
+        u_id: effectiveConfig.u_id,
+        username: member || effectiveConfig.label,
         created_at: time.createdAt,
         content,
         url: finalUrl,
@@ -918,7 +975,7 @@ export function buildWebsiteArticle(
             data: {
                 site: '22/7',
                 host: MOBILE_227_HOST,
-                feed: config.feed,
+                feed: effectiveConfig.feed,
                 title,
                 member,
                 summary: summary || null,
@@ -1516,6 +1573,13 @@ async function extractNewsDetail(page: Page, url: string, feed: FeedKind): Promi
                 }
             })
             .filter((media): media is { type: 'photo'; url: string; alt: string | undefined } => media !== null)
+        // Mirrors readNewsDetailMarkers: fc template checked first, then the
+        // legacy public template. Keep both in sync.
+        const template: 'fc' | 'public' | null = document.querySelector('.section-article, .article-content')
+            ? 'fc'
+            : document.querySelector('#infoDetail, #infoCaption')
+              ? 'public'
+              : null
         return {
             title: clean(
                 document.querySelector('#infoCaption')?.textContent ||
@@ -1529,6 +1593,10 @@ async function extractNewsDetail(page: Page, url: string, feed: FeedKind): Promi
             bodyHtml: body?.innerHTML || '',
             member: null,
             media,
+            newsMarkers: {
+                documentTitle: document.title,
+                template,
+            },
         }
     }, url)
 }
@@ -1653,7 +1721,7 @@ async function extractTicketDetail(page: Page, url: string): Promise<WebsiteDeta
     }, url)
 }
 
-async function extractRadioDetail(page: Page, url: string, listItem: WebsiteListItem): Promise<WebsiteDetailPayload> {
+async function extractRadioDetail(page: Page, url: string, _listItem: WebsiteListItem): Promise<WebsiteDetailPayload> {
     const brightcove = startBrightcovePlaybackCapture(page)
     let detail: WebsiteDetailPayload
     try {
@@ -1819,7 +1887,7 @@ async function extractRadioDetail(page: Page, url: string, listItem: WebsiteList
     return detail
 }
 
-async function extractMovieDetail(page: Page, url: string, listItem: WebsiteListItem): Promise<WebsiteDetailPayload> {
+async function extractMovieDetail(page: Page, url: string, _listItem: WebsiteListItem): Promise<WebsiteDetailPayload> {
     const brightcove = startBrightcovePlaybackCapture(page)
     let detail: WebsiteDetailPayload
     try {
@@ -2216,11 +2284,21 @@ class NanabunnonijyuuniWebsiteSpider extends BaseSpider {
         }
 
         if (parsed.pathname === '/s/n110/news/list') {
+            // ?ct=news is the FC NEWS tab. Everything else (bare url / ?cd=official-news)
+            // takes the official-news list identity — note the bare url actually serves
+            // the merged list of BOTH categories; per-item category is decided by the
+            // detail-page marker at build time (see resolveNewsDetailFeed).
             return parsed.searchParams.get('ct') === 'news' ? FEED_CONFIGS['fc-news'] : FEED_CONFIGS['official-news']
         }
 
         if (isNewsDetail(parsed.pathname)) {
-            return FEED_CONFIGS['fc-news']
+            // News detail pages are shared by both news categories and the URL
+            // carries no category, so this is only a provisional feed (task
+            // identity / extractor family); the article's real category is
+            // decided by the detail-page marker at build time — see
+            // resolveNewsDetailFeed. Default to the public NEWS identity, same
+            // as the bare merged /news/list url.
+            return FEED_CONFIGS['official-news']
         }
 
         if (parsed.pathname === '/s/n110/diary/official_blog/list') {

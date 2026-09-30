@@ -1,15 +1,21 @@
 import { describe, expect, test } from 'bun:test'
 import dayjs from 'dayjs'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import {
     buildPhotoAlbumArticle,
     buildWebsiteArticle,
     isWebsiteAuthGateSnapshot,
     NanabunnonijyuuniWebsiteSpider,
+    readNewsDetailMarkers,
+    resolveNewsDetailFeed,
     resolveWebsiteCrawlOptions,
     resolveWebsiteFeedResourceBlocking,
     splitPhotoAlbumPayloadByDate,
     type FeedConfig,
 } from '../src/spiders/website'
+
+const dataPath = (...parts: Array<string>) => join(import.meta.dir, 'data', ...parts)
 
 describe('NanabunnonijyuuniWebsiteSpider.resolveFeed', () => {
     test('matches supported 22/7 FC and live-report routes', () => {
@@ -529,5 +535,129 @@ describe('buildWebsiteArticle', () => {
         )
 
         expect(article.created_at).toBe(dayjs('2026-03-20 18:15').unix())
+    })
+})
+
+describe('news feed classification (official NEWS vs FC NEWS)', () => {
+    // Fixture HTML captured 2026-09-28 from nanabunnonijyuuni-mobile.com (mobile
+    // UA, no cookie), script/style contents stripped. The bug being regressed:
+    // 一般新闻 was labelled FC新闻 whenever the article was resolved from a
+    // /news/detail/* url, and FC items found through the merged bare /news/list
+    // were labelled official-news — the crawl URL decided instead of the article.
+    const officialDetailHtml = readFileSync(dataPath('website', 'news-detail-official-11445.html'), 'utf-8')
+    const fcDetailHtml = readFileSync(dataPath('website', 'news-detail-fc-11435.html'), 'utf-8')
+    const mergedListHtml = readFileSync(dataPath('website', 'news-list-merged.html'), 'utf-8')
+
+    test('detail page markers separate general news from FC news', () => {
+        const officialMarkers = readNewsDetailMarkers(officialDetailHtml)
+        expect(officialMarkers.documentTitle).toBe('NEWS | 22/7(ナナブンノニジュウニ)')
+        expect(officialMarkers.template).toBe('public')
+        expect(resolveNewsDetailFeed(officialMarkers, 'fc-news')).toBe('official-news')
+
+        const fcMarkers = readNewsDetailMarkers(fcDetailHtml)
+        expect(fcMarkers.documentTitle).toBe('ナナニジPHOTO更新！ | 22/7ファンクラブ')
+        expect(fcMarkers.template).toBe('fc')
+        expect(resolveNewsDetailFeed(fcMarkers, 'official-news')).toBe('fc-news')
+    })
+
+    test('general news resolved from a detail url is emitted as official news, not FC news', () => {
+        // URL-level identity of a shared news detail url is provisional and defaults
+        // to the public NEWS side — it must not claim fc-news.
+        expect(
+            NanabunnonijyuuniWebsiteSpider.resolveFeed(
+                'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11445',
+            )?.feed,
+        ).toBe('official-news')
+        expect(
+            NanabunnonijyuuniWebsiteSpider.extractBasicInfo(
+                'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11445',
+            )?.u_id,
+        ).toBe('22/7:official-news')
+
+        // Even when the URL-derived feed says fc-news (old behavior), the detail
+        // page marker must win.
+        const article = buildWebsiteArticle(
+            {
+                feed: 'fc-news',
+                u_id: '22/7:fc-news',
+                label: '22/7 FC News',
+            },
+            'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11445',
+            {
+                detailUrl: 'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11445',
+                title: '',
+                dateText: '',
+                summary: null,
+                member: null,
+                thumbnail: null,
+            },
+            {
+                title: '',
+                dateText: '2026.09.24',
+                bodyText: 'General news body',
+                bodyHtml: '<p>General news body</p>',
+                member: null,
+                media: [],
+                newsMarkers: readNewsDetailMarkers(officialDetailHtml),
+            },
+        )
+
+        expect(article.u_id).toBe('22/7:official-news')
+        expect(article.extra?.data?.feed).toBe('official-news')
+        // Shared id space: the bare numeric id lets the global dedup skip the same
+        // article when the other news feed discovers it later.
+        expect(article.a_id).toBe('11445')
+    })
+
+    test('FC item discovered through the merged bare list is emitted as FC news', () => {
+        // The bare merged list resolves to the official-news feed at list level.
+        expect(
+            NanabunnonijyuuniWebsiteSpider.resolveFeed('https://nanabunnonijyuuni-mobile.com/s/n110/news/list')?.feed,
+        ).toBe('official-news')
+
+        // The merged list really interleaves both categories: the general-news item
+        // 11445 and the FC item 11435 both appear on it.
+        const mergedDetailPaths = Array.from(mergedListHtml.matchAll(/href="(\/s\/n110\/news\/detail\/\d+)[^"]*"/g)).map(
+            (match) => match[1]!,
+        )
+        expect(mergedDetailPaths).toContain('/s/n110/news/detail/11445')
+        expect(mergedDetailPaths).toContain('/s/n110/news/detail/11435')
+
+        const article = buildWebsiteArticle(
+            {
+                feed: 'official-news',
+                u_id: '22/7:official-news',
+                label: '22/7 Official News',
+            },
+            'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11435',
+            {
+                detailUrl: 'https://nanabunnonijyuuni-mobile.com/s/n110/news/detail/11435',
+                title: 'ナナニジPHOTO更新！',
+                dateText: '2026.09.25',
+                summary: null,
+                member: null,
+                thumbnail: null,
+            },
+            {
+                title: 'ナナニジPHOTO更新！',
+                dateText: '2026.09.25',
+                bodyText: 'FC news body',
+                bodyHtml: '<p>FC news body</p>',
+                member: null,
+                media: [],
+                newsMarkers: readNewsDetailMarkers(fcDetailHtml),
+            },
+        )
+
+        expect(article.u_id).toBe('22/7:fc-news')
+        expect(article.extra?.data?.feed).toBe('fc-news')
+        // Same shared id space as the official feed — one article, one emission.
+        expect(article.a_id).toBe('11435')
+    })
+
+    test('falls back to the list-derived feed when the detail page carries no marker', () => {
+        expect(resolveNewsDetailFeed({}, 'fc-news')).toBe('fc-news')
+        expect(resolveNewsDetailFeed({ documentTitle: '', template: null }, 'official-news')).toBe('official-news')
+        expect(resolveNewsDetailFeed(null, 'official-news')).toBe('official-news')
     })
 })
