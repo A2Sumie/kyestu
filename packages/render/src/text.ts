@@ -58,11 +58,11 @@ const WEBSITE_FEED_LABELS: Record<string, string> = {
     radio: 'RADIO',
     ticket: 'TICKET',
 }
-/** superscript "JST" — clock timezone suffix (U+1D36 U+02E2 U+1D40) */
-const TIMEZONE_LABEL_JST = 'ᴶˢᵀ'
+/** superscript "jp" — header clock timezone suffix (U+02B2 U+1D56) */
+const TIMEZONE_LABEL_JP = 'ʲᵖ'
 
 function formatTimezoneSuffix() {
-    return TIMEZONE_LABEL_JST
+    return TIMEZONE_LABEL_JP
 }
 
 function getRenderDate(unixTimestamp: number) {
@@ -114,7 +114,7 @@ function formatArticlePlainTimeToken(unix_timestamp: number) {
 }
 
 function formatArticleAttributionTimeToken(unix_timestamp: number) {
-    return `${formatClock(unix_timestamp)}（${formatDisplayDate(unix_timestamp)}）`
+    return `${formatBareClock(unix_timestamp)}+9（${formatDisplayDate(unix_timestamp)}）`
 }
 
 function getWebsiteTimeSource(article: Article) {
