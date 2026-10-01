@@ -23,8 +23,8 @@ const SHORT_PLATFORM_LABELS: Partial<Record<Platform, string>> = {
 }
 const SHORT_ACTION_LABELS: Partial<Record<Platform, Record<string, string>>> = {
     [Platform.X]: {
-        tweet: '发推',
-        retweet: '转推',
+        tweet: '发帖',
+        retweet: '转发',
         reply: '回复',
         conversation: '回复',
         quoted: '引用',

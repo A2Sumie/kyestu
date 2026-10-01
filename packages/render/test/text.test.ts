@@ -118,7 +118,7 @@ test('translation passthrough uses the title/body/blank/attribution layout', () 
             '南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特',
             '刚才比平时更kururun（轻飘飘开心）呢。注意到的人请举手！',
             '',
-            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推',
+            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖',
         ].join('\n'),
     )
 })
@@ -126,7 +126,7 @@ test('translation passthrough uses the title/body/blank/attribution layout', () 
 test('translation passthrough title separates the name from the compact time token', () => {
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
     expect(text.split('\n')[0]).toBe('南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特')
-    expect(text.split('\n').at(-1)).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推')
+    expect(text.split('\n').at(-1)).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖')
 })
 
 test('translation passthrough appends the card marker when the first layer has body and a ref', () => {
@@ -143,7 +143,7 @@ test('translation passthrough appends the card marker when the first layer has b
             '',
             PASSTHROUGH_CARD_DEFERRED_MARKER,
             '',
-            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转推',
+            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转发',
         ].join('\n'),
     )
     expect(text).toContain('余下见卡片')
@@ -153,7 +153,7 @@ test('translation passthrough without a ref keeps the plain title/body/attributi
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
     expect(text).not.toContain('余下见卡片')
     expect(text).toBe(
-        ['南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推'].join('\n'),
+        ['南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖'].join('\n'),
     )
 })
 
@@ -164,7 +164,7 @@ test('translation passthrough returns attribution only when the first layer has 
     }
     const text = formatTranslationPassthrough(article, '')
 
-    expect(text).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转推')
+    expect(text).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转发')
     expect(text).not.toContain('余下见卡片')
 })
 
@@ -173,5 +173,5 @@ test('translation passthrough drops a redundant @handle when it equals the displ
     const text = formatTranslationPassthrough(article, '译文')
     const lines = text.split('\n')
     expect(lines[0]).toBe('minami__iori 1556ᴶˢᵀ(07.20) 推特')
-    expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) 推特发推')
+    expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) 推特发帖')
 })
