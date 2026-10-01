@@ -88,7 +88,7 @@ test('website photo card text keeps the body out and adds the photo badge', () =
         [
             '【22/7 PHOTO📷】说到夏天！',
             '',
-            '22/7官网 PHOTO 0100⁺⁹（240310）',
+            '22/7官网 PHOTO 0100ᴶˢᵀ（240310）',
             'https://nanabunnonijyuuni-mobile.com/s/n110/gallery?ct=photoga',
         ].join('\n'),
     )
@@ -105,8 +105,8 @@ test('website estimated publish time is marked as EST in render metadata', () =>
 test('website crawl-observed time says it is a crawl timestamp', () => {
     const article = websiteArticle('crawl_observed')
 
-    expect(formatArticleHeaderLine(article)).toContain('抓取于 0100⁺⁹')
-    expect(formatArticleAttributionLine(article)).toContain('抓取于 0100⁺⁹（240310）')
+    expect(formatArticleHeaderLine(article)).toContain('抓取于 0100ᴶˢᵀ')
+    expect(formatArticleAttributionLine(article)).toContain('抓取于 0100ᴶˢᵀ（240310）')
 })
 
 test('translation passthrough uses the title/body/blank/attribution layout', () => {

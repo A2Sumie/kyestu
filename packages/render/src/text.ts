@@ -15,7 +15,6 @@ type ArticleTextOptions = {
 
 const RENDER_TIMEZONE_OFFSET_MINUTES = 9 * 60
 const SHORT_PLATFORM_LABELS: Partial<Record<Platform, string>> = {
-    [Platform.X]: '推特',
     [Platform.Instagram]: 'IG',
     [Platform.TikTok]: 'TT',
     [Platform.YouTube]: 'YT',
@@ -59,44 +58,11 @@ const WEBSITE_FEED_LABELS: Record<string, string> = {
     radio: 'RADIO',
     ticket: 'TICKET',
 }
-const SUPERSCRIPT_DIGITS: Record<string, string> = {
-    '+': '⁺',
-    '-': '⁻',
-    '0': '⁰',
-    '1': '¹',
-    '2': '²',
-    '3': '³',
-    '4': '⁴',
-    '5': '⁵',
-    '6': '⁶',
-    '7': '⁷',
-    '8': '⁸',
-    '9': '⁹',
-}
-/** superscript "JST" — header clock suffix (U+1D36 U+02E2 U+1D40) */
+/** superscript "JST" — clock timezone suffix (U+1D36 U+02E2 U+1D40) */
 const TIMEZONE_LABEL_JST = 'ᴶˢᵀ'
 
-function mapDigits(value: string, digits: Record<string, string>) {
-    return value
-        .split('')
-        .map((char) => digits[char] || char)
-        .join('')
-}
-
-function toSuperscript(value: string) {
-    return mapDigits(value, SUPERSCRIPT_DIGITS)
-}
-
-function formatTimezoneSuffix(offsetMinutes: number = RENDER_TIMEZONE_OFFSET_MINUTES) {
-    if (offsetMinutes === 0) {
-        return SUPERSCRIPT_DIGITS['0']
-    }
-
-    const absoluteMinutes = Math.abs(offsetMinutes)
-    const hours = Math.floor(absoluteMinutes / 60)
-    const minutes = absoluteMinutes % 60
-    const zone = minutes === 0 ? `${hours}` : `${hours}${String(minutes).padStart(2, '0')}`
-    return `${SUPERSCRIPT_DIGITS[offsetMinutes < 0 ? '-' : '+']}${toSuperscript(zone)}`
+function formatTimezoneSuffix() {
+    return TIMEZONE_LABEL_JST
 }
 
 function getRenderDate(unixTimestamp: number) {
@@ -137,7 +103,7 @@ function formatDisplayDate(unix_timestamp: number) {
 function formatArticleTimeToken(unix_timestamp: number) {
     const time = getRenderDate(unix_timestamp)
     const monthDay = `${pad2(time.getUTCMonth() + 1)}.${pad2(time.getUTCDate())}`
-    return `${formatBareClock(unix_timestamp)}${TIMEZONE_LABEL_JST}(${monthDay})`
+    return `${formatClock(unix_timestamp)}(${monthDay})`
 }
 
 function formatArticlePlainTimeToken(unix_timestamp: number) {

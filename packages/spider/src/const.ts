@@ -34,7 +34,7 @@ const platformArticleMapToActionText: Record<Platform, Record<string, string>> =
 }
 
 const platformNameMap: Record<Platform, string> = {
-    [Platform.X]: 'X',
+    [Platform.X]: '推特',
     [Platform.Instagram]: 'Instagram',
     [Platform.TikTok]: 'TikTok',
     [Platform.YouTube]: 'YouTube',
