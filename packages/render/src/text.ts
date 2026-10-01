@@ -158,7 +158,7 @@ function formatArticleUserId(article: Pick<Article, 'u_id' | 'username' | 'a_id'
 }
 
 function formatArticlePlatformLabel(article: Pick<Article, 'platform'>) {
-    return SHORT_PLATFORM_LABELS[article.platform] || platformNameMap[article.platform]
+    return SHORT_PLATFORM_LABELS[article.platform] || platformNameMap[article.platform] || ''
 }
 
 function formatArticleActionLabel(article: Pick<Article, 'platform' | 'type'>) {
@@ -387,13 +387,15 @@ function extractTextHeadline(text: string, maxLength: number = 80) {
 }
 
 function extractArticleHeadline(article: Article, maxLength: number = 80) {
-    const candidates = [
-        article.content,
-        article.translation,
-        article.extra?.content,
-        article.extra?.translation,
-        `${article.username || ''} ${platformNameMap[article.platform] || ''}`.trim(),
-    ]
+    // Content candidates walk the reference chain: a retweet/quote carries its
+    // body on `ref`, and falling through to the bare identity placeholder there
+    // is what used to drop the action word ("转推没了").
+    const candidates: unknown[] = []
+    let node: Article | null = article
+    for (let depth = 0; node && depth < 5; depth += 1) {
+        candidates.push(node.content, node.translation, node.extra?.content, node.extra?.translation)
+        node = node.ref && typeof node.ref === 'object' ? (node.ref as Article) : null
+    }
 
     for (const candidate of candidates) {
         const headline = extractTextHeadline(String(candidate || ''), maxLength)
@@ -402,7 +404,10 @@ function extractArticleHeadline(article: Article, maxLength: number = 80) {
         }
     }
 
-    return truncateCompactText(formatCompactMetaline(article).replace(/\s+/g, ' '), maxLength)
+    // Identity line keeps the source action (发帖/转发/…); the bare
+    // "username + platform" form is only a last resort when even that is empty.
+    const metaline = truncateCompactText(formatCompactMetaline(article).replace(/\s+/g, ' '), maxLength)
+    return metaline || `${article.username || ''} ${platformNameMap[article.platform] || ''}`.trim()
 }
 
 function parseCompactRawContent(article: Article) {

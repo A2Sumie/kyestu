@@ -1,6 +1,7 @@
 import { expect, test } from 'bun:test'
 import { Platform } from '@kyestu/spider/types'
 import {
+    extractArticleHeadline,
     formatArticleAttributionLine,
     formatArticleHeaderLine,
     formatArticlePlainTimeToken,
@@ -174,4 +175,30 @@ test('translation passthrough drops a redundant @handle when it equals the displ
     const lines = text.split('\n')
     expect(lines[0]).toBe('minami__iori 1556ʲᵖ(07.20) 推特')
     expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) 推特发帖')
+})
+
+test('retweet headline keeps the source action instead of the bare identity placeholder', () => {
+    const retweet = {
+        a_id: '2105494853719363851',
+        u_id: '227_staff',
+        username: '22/7(ナナブンノニジュウニ)',
+        created_at: 1790824065,
+        platform: Platform.X,
+        type: 'retweet',
+        content: '',
+        translation: '',
+        ref: 17213,
+    } as unknown as Article
+
+    // body lives on `ref`; with a bare id ref the identity line keeps the action word
+    expect(extractArticleHeadline(retweet)).toBe('@227_staff 1207ʲᵖ 推特转发')
+    // with a hydrated ref the headline comes from the retweeted content
+    expect(
+        extractArticleHeadline({
+            ...retweet,
+            ref: { ...retweet, a_id: '1', u_id: 'idolfile_jp', username: 'IDOL FILE 編集部', content: '📸写真展决定', ref: null },
+        }),
+    ).toBe('📸写真展决定')
+    // an unknown platform never renders the literal "undefined"
+    expect(extractArticleHeadline({ ...retweet, platform: undefined as never })).not.toContain('undefined')
 })
