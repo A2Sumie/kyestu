@@ -507,7 +507,7 @@ test('translated-corner-badge watermark uses a staggered polka-dot grid on long 
             {
                 index: 1,
                 text:
-                    `@member_${index} 190${index}⁹ X发推\n\n` +
+                    `@member_${index} 190${index}⁹ 推特发推\n\n` +
                     '今日はライブのお知らせと感想をまとめました。読みやすい長さの本文を保持します。\n' +
                     '引用や補足も聚合卡里は省略しません。',
             },
@@ -564,7 +564,7 @@ test('long message-pack cards keep only a small height safety margin', () => {
             {
                 index: 1,
                 text:
-                    `@member_${index} 190${index}⁹ X发推\n\n` +
+                    `@member_${index} 190${index}⁹ 推特发推\n\n` +
                     '今日はライブのお知らせと感想をまとめました。読みやすい長さの本文を保持します。\n' +
                     '引用や補足も聚合卡里は省略しません。',
             },
@@ -609,7 +609,7 @@ test('long message-pack cards render at higher raster width even without waterma
             {
                 index: 1,
                 text:
-                    `@member_${index} 190${index}⁹ X发推\n\n` +
+                    `@member_${index} 190${index}⁹ 推特发推\n\n` +
                     '今日はライブのお知らせと感想をまとめました。読みやすい長さの本文を保持します。\n' +
                     '引用や補足も聚合卡里は省略しません。',
             },

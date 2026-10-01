@@ -15,6 +15,7 @@ type ArticleTextOptions = {
 
 const RENDER_TIMEZONE_OFFSET_MINUTES = 9 * 60
 const SHORT_PLATFORM_LABELS: Partial<Record<Platform, string>> = {
+    [Platform.X]: '推特',
     [Platform.Instagram]: 'IG',
     [Platform.TikTok]: 'TT',
     [Platform.YouTube]: 'YT',
@@ -72,18 +73,8 @@ const SUPERSCRIPT_DIGITS: Record<string, string> = {
     '8': '⁸',
     '9': '⁹',
 }
-const SUBSCRIPT_DIGITS: Record<string, string> = {
-    '0': '₀',
-    '1': '₁',
-    '2': '₂',
-    '3': '₃',
-    '4': '₄',
-    '5': '₅',
-    '6': '₆',
-    '7': '₇',
-    '8': '₈',
-    '9': '₉',
-}
+/** superscript "JST" — header clock suffix (U+1D36 U+02E2 U+1D40) */
+const TIMEZONE_LABEL_JST = 'ᴶˢᵀ'
 
 function mapDigits(value: string, digits: Record<string, string>) {
     return value
@@ -94,10 +85,6 @@ function mapDigits(value: string, digits: Record<string, string>) {
 
 function toSuperscript(value: string) {
     return mapDigits(value, SUPERSCRIPT_DIGITS)
-}
-
-function toSubscript(value: string) {
-    return mapDigits(value, SUBSCRIPT_DIGITS)
 }
 
 function formatTimezoneSuffix(offsetMinutes: number = RENDER_TIMEZONE_OFFSET_MINUTES) {
@@ -149,9 +136,8 @@ function formatDisplayDate(unix_timestamp: number) {
 
 function formatArticleTimeToken(unix_timestamp: number) {
     const time = getRenderDate(unix_timestamp)
-    const monthDay = `${pad2(time.getUTCMonth() + 1)}${pad2(time.getUTCDate())}`
-    const year = toSubscript(pad2(time.getUTCFullYear() % 100))
-    return `${formatClock(unix_timestamp)}(${monthDay}${year})`
+    const monthDay = `${pad2(time.getUTCMonth() + 1)}.${pad2(time.getUTCDate())}`
+    return `${formatBareClock(unix_timestamp)}${TIMEZONE_LABEL_JST}(${monthDay})`
 }
 
 function formatArticlePlainTimeToken(unix_timestamp: number) {
@@ -356,7 +342,7 @@ function parseRawContent(article: Article) {
 function normalizeComparableText(text: string | null | undefined) {
     return String(text || '')
         .replace(/\r\n/g, '\n')
-        .replace(/[【】「」『』"'“”‘’\[\]()（）]/g, '')
+        .replace(/[【】「」『』"'“”‘’[]()（）]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .toLocaleLowerCase()

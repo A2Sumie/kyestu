@@ -56,9 +56,9 @@ function websiteArticle(timeSource: string): Article {
     }
 }
 
-test('compact article time uses explicit positive timezone and subscript YY', () => {
+test('compact article time uses JST suffix and dotted MM.DD without year', () => {
     const timestamp = Math.floor(Date.UTC(2026, 7, 3, 8, 5, 0) / 1000)
-    expect(formatArticleTimeToken(timestamp)).toBe('1705⁺⁹(0803₂₆)')
+    expect(formatArticleTimeToken(timestamp)).toBe('1705ᴶˢᵀ(08.03)')
 })
 
 test('lower metadata time uses plain timezone and year digits', () => {
@@ -115,18 +115,18 @@ test('translation passthrough uses the title/body/blank/attribution layout', () 
 
     expect(text).toBe(
         [
-            '南伊織【22/7】 1556⁺⁹(0720₂₆) X',
+            '南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特',
             '刚才比平时更kururun（轻飘飘开心）呢。注意到的人请举手！',
             '',
-            '@minami__iori 南伊織【22/7】 1556+9(0720_26) X发推',
+            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推',
         ].join('\n'),
     )
 })
 
 test('translation passthrough title separates the name from the compact time token', () => {
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
-    expect(text.split('\n')[0]).toBe('南伊織【22/7】 1556⁺⁹(0720₂₆) X')
-    expect(text.split('\n').at(-1)).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) X发推')
+    expect(text.split('\n')[0]).toBe('南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特')
+    expect(text.split('\n').at(-1)).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推')
 })
 
 test('translation passthrough appends the card marker when the first layer has body and a ref', () => {
@@ -138,12 +138,12 @@ test('translation passthrough appends the card marker when the first layer has b
 
     expect(text).toBe(
         [
-            '南伊織【22/7】 1556⁺⁹(0720₂₆) X',
+            '南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特',
             '第一层评论',
             '',
             PASSTHROUGH_CARD_DEFERRED_MARKER,
             '',
-            '@minami__iori 南伊織【22/7】 1556+9(0720_26) X转推',
+            '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转推',
         ].join('\n'),
     )
     expect(text).toContain('余下见卡片')
@@ -153,7 +153,7 @@ test('translation passthrough without a ref keeps the plain title/body/attributi
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
     expect(text).not.toContain('余下见卡片')
     expect(text).toBe(
-        ['南伊織【22/7】 1556⁺⁹(0720₂₆) X', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) X发推'].join('\n'),
+        ['南伊織【22/7】 1556ᴶˢᵀ(07.20) 推特', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发推'].join('\n'),
     )
 })
 
@@ -164,7 +164,7 @@ test('translation passthrough returns attribution only when the first layer has 
     }
     const text = formatTranslationPassthrough(article, '')
 
-    expect(text).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) X转推')
+    expect(text).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特转推')
     expect(text).not.toContain('余下见卡片')
 })
 
@@ -172,6 +172,6 @@ test('translation passthrough drops a redundant @handle when it equals the displ
     const article = { ...xArticle('tweet'), username: 'minami__iori' }
     const text = formatTranslationPassthrough(article, '译文')
     const lines = text.split('\n')
-    expect(lines[0]).toBe('minami__iori 1556⁺⁹(0720₂₆) X')
-    expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) X发推')
+    expect(lines[0]).toBe('minami__iori 1556ᴶˢᵀ(07.20) 推特')
+    expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) 推特发推')
 })
