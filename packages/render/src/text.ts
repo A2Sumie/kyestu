@@ -166,7 +166,8 @@ function formatArticleActionLabel(article: Pick<Article, 'platform' | 'type'>) {
         SHORT_ACTION_LABELS[article.platform]?.[article.type] ||
         platformArticleMapToActionText[article.platform]?.[article.type] ||
         SYNTHETIC_ACTION_LABELS[article.type] ||
-        article.type
+        article.type ||
+        ''
     )
 }
 
@@ -202,7 +203,7 @@ function formatPassthroughTitleLine(
     const username = String(article.username || '').trim()
     const name = username || formatArticleUserId(article)
     const timeToken = article.created_at ? formatArticleTimeToken(article.created_at) : ''
-    return [name, timeToken, formatArticlePlatformLabel(article)].filter(Boolean).join(' ').trim()
+    return [name, timeToken, formatArticleSourceActionLabel(article)].filter(Boolean).join(' ').trim()
 }
 
 function formatPassthroughAttributionLine(

@@ -116,7 +116,7 @@ test('translation passthrough uses the title/body/blank/attribution layout', () 
 
     expect(text).toBe(
         [
-            '南伊織【22/7】 1556ʲᵖ(07.20) 推特',
+            '南伊織【22/7】 1556ʲᵖ(07.20) 推特发帖',
             '刚才比平时更kururun（轻飘飘开心）呢。注意到的人请举手！',
             '',
             '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖',
@@ -126,7 +126,7 @@ test('translation passthrough uses the title/body/blank/attribution layout', () 
 
 test('translation passthrough title separates the name from the compact time token', () => {
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
-    expect(text.split('\n')[0]).toBe('南伊織【22/7】 1556ʲᵖ(07.20) 推特')
+    expect(text.split('\n')[0]).toBe('南伊織【22/7】 1556ʲᵖ(07.20) 推特发帖')
     expect(text.split('\n').at(-1)).toBe('@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖')
 })
 
@@ -139,7 +139,7 @@ test('translation passthrough appends the card marker when the first layer has b
 
     expect(text).toBe(
         [
-            '南伊織【22/7】 1556ʲᵖ(07.20) 推特',
+            '南伊織【22/7】 1556ʲᵖ(07.20) 推特转发',
             '第一层评论',
             '',
             PASSTHROUGH_CARD_DEFERRED_MARKER,
@@ -154,7 +154,7 @@ test('translation passthrough without a ref keeps the plain title/body/attributi
     const text = formatTranslationPassthrough(xArticle('tweet'), '译文')
     expect(text).not.toContain('余下见卡片')
     expect(text).toBe(
-        ['南伊織【22/7】 1556ʲᵖ(07.20) 推特', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖'].join('\n'),
+        ['南伊織【22/7】 1556ʲᵖ(07.20) 推特发帖', '译文', '', '@minami__iori 南伊織【22/7】 1556+9(0720_26) 推特发帖'].join('\n'),
     )
 })
 
@@ -173,7 +173,7 @@ test('translation passthrough drops a redundant @handle when it equals the displ
     const article = { ...xArticle('tweet'), username: 'minami__iori' }
     const text = formatTranslationPassthrough(article, '译文')
     const lines = text.split('\n')
-    expect(lines[0]).toBe('minami__iori 1556ʲᵖ(07.20) 推特')
+    expect(lines[0]).toBe('minami__iori 1556ʲᵖ(07.20) 推特发帖')
     expect(lines.at(-1)).toBe('@minami__iori 1556+9(0720_26) 推特发帖')
 })
 
