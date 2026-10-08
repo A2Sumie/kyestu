@@ -161,6 +161,99 @@ test('live_capture is skipped with a warning instead of emitting an unregistered
   expect((config as any).warnings!.some((w: string) => w.includes('live_capture'))).toBe(true)
 })
 
+test('processor-formatter connections derive routes via the owning crawler without a cycle', () => {
+  const config = convertIdolBbqConfig({
+    crawlers: [{ name: 'X主列表', origin: 'https://x.com', paths: ['u'] }],
+    processors: [{ id: 'ja-zh', provider: 'DeepSeekV4Flash', cfg_processor: { wire_api: 'responses' } }],
+    formatters: [{ id: 'fmt-card', render_type: 'img-tag' }],
+    forward_targets: [{ platform: 'qq', id: '群1', cfg_platform: { group_id: 1 } }],
+    connections: {
+      'crawler-processor': { X主列表: 'ja-zh' },
+      'processor-formatter': { 'ja-zh': ['fmt-card'] },
+      'formatter-target': { 'fmt-card': ['群1'] },
+    },
+  })
+  // the processor is a crawl-time service (service edge below), not a via
+  // stage: via [ja-zh, fmt-card] would make ja-zh need the crawler while the
+  // crawler needs ja-zh — a cycle compileConfig rejects (regression)
+  expect(config.routes).toContainEqual({ from: 'X主列表', via: ['fmt-card'], to: ['群1'] })
+  expect(config.routes).toContainEqual({ from: 'ja-zh', to: ['X主列表'] })
+  const entries = compileConfig(config) // must not throw
+  const needs = Object.fromEntries(entries.map((e) => [e.id, e.needs ?? []]))
+  expect(needs['X主列表']).toEqual(['ja-zh'])
+  expect(needs['fmt-card']).toEqual(['X主列表'])
+  expect(needs['群1']).toEqual(['fmt-card'])
+})
+
+test('processor-formatter for a processor with no owning crawler warns and skips', () => {
+  const config = convertIdolBbqConfig({
+    processors: [{ id: 'ja-zh', provider: 'DeepSeekV4Flash', cfg_processor: {} }],
+    formatters: [
+      { id: 'fmt-card', render_type: 'img-tag' },
+      { id: 'fmt-text', render_type: 'text' },
+    ],
+    connections: { 'processor-formatter': { 'ja-zh': ['fmt-card', 'fmt-text'] } },
+  })
+  expect(config.routes ?? []).toEqual([])
+  expect((config as any).warnings.some((w: string) => w.includes("processor-formatter: processor 'ja-zh'"))).toBe(true)
+  // the warning lists EVERY skipped formatter link (mutation-hardening: the
+  // id list separator and the skipped tail are pinned, not just the prefix)
+  expect(
+    (config as any).warnings.some(
+      (w: string) => w.includes("has no owning crawler") && w.includes("[fmt-card, fmt-text] skipped"),
+    ),
+  ).toBe(true)
+})
+
+test('processor-formatter without a formatter-target derives a route with an empty target list', () => {
+  // pins the formatterTarget[formatterId] ?? [] fallback: a formatter with no
+  // forward target still gets its crawl->format route, delivering nowhere
+  const config = convertIdolBbqConfig({
+    crawlers: [{ name: 'X主列表', origin: 'https://x.com', paths: ['u'] }],
+    processors: [{ id: 'ja-zh', provider: 'DeepSeekV4Flash', cfg_processor: { wire_api: 'responses' } }],
+    formatters: [{ id: 'fmt-card', render_type: 'img-tag' }],
+    connections: {
+      'crawler-processor': { X主列表: 'ja-zh' },
+      'processor-formatter': { 'ja-zh': ['fmt-card'] },
+    },
+  })
+  expect(config.routes).toContainEqual({ from: 'X主列表', via: ['fmt-card'], to: [] })
+  expect(config.routes).toContainEqual({ from: 'ja-zh', to: ['X主列表'] })
+})
+
+test('unknown providers are skipped with a warning and their edges are dropped', () => {
+  const config = convertIdolBbqConfig({
+    crawlers: [{ name: 'X主列表', origin: 'https://x.com', paths: ['u'] }],
+    processors: [{ id: 'mystery', provider: 'SomeNewVendor', cfg_processor: {} }],
+    connections: { 'crawler-processor': { X主列表: 'mystery' } },
+  })
+  expect(config.components.some((c) => c.id === 'mystery')).toBe(false)
+  const warnings = (config as any).warnings as string[]
+  expect(warnings.some((w) => w.includes("unknown provider 'SomeNewVendor'"))).toBe(true)
+  expect(warnings.some((w) => w.includes("link to dropped processor 'mystery'"))).toBe(true)
+  expect(config.routes ?? []).toEqual([])
+})
+
+test('forwarders produce the legacy auto-bind warning and no entries', () => {
+  const config = convertIdolBbqConfig({ forwarders: [{ name: 'media-fetcher' }] })
+  expect(config.components.some((c) => c.id === 'media-fetcher')).toBe(false)
+  expect((config as any).warnings.some((w: string) => w.includes("forwarder 'media-fetcher'"))).toBe(true)
+})
+
+test('website platform kinds are detected from origin (22/7 FC and leap)', () => {
+  const config = convertIdolBbqConfig({
+    crawlers: [
+      { name: '博客', origin: 'https://nanabunnonijyuuni.com', paths: ['blog'] },
+      { name: 'leap', origin: 'https://leap-projects.jp', paths: ['news'] },
+      { name: '其它站', origin: 'https://example.com', paths: ['x'] },
+    ],
+  })
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+  expect(byId.get('博客')!.use).toBe('crawler/website-227')
+  expect(byId.get('leap')!.use).toBe('crawler/leap')
+  expect(byId.get('其它站')!.use).toBe('crawler/website')
+})
+
 test('Mechanical processors map to processor/rules instead of being dropped', () => {
   const config = convertIdolBbqConfig({
     processors: [

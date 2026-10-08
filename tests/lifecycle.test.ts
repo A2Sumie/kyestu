@@ -53,6 +53,17 @@ test('duplicate provider: second provider fails, first provider and consumers un
   await root.dispose()
 })
 
+test('single-source: a root-owned binding conflict throws the dedicated error, not a TypeError', () => {
+  // mutation-hardening: root-owned entries have owner === null; the conflict
+  // path must still throw the named single-source error (succession lets only
+  // RETIRING owners through — ownerless/root bindings stay a hard error)
+  const root = createRoot()
+  root.ctx.set('svc', 'v1')
+  expect(() => root.ctx.set('svc', 'v2')).toThrow(/^coeffect key already provided: /)
+  expect(String(root.ctx.get('svc'))).toBe('v1')
+  return root.dispose()
+})
+
 test('parent unload cascades to children registered in apply', async () => {
   const root = createRoot()
   const order: string[] = []
@@ -90,7 +101,10 @@ test('per-entry reconciliation: replacing one fiber leaves an unrelated fiber un
 
 test('guard timeout: provider forces recovery past a stuck dependent, with taint recorded', async () => {
   const events: KyestuEvent[] = []
-  const root = createRoot({ unloadGuardTimeoutMs: 100, onEvent: (e) => events.push(e) })
+  // a huge inverse-guard budget keeps the stuck dependent's own reaper out of
+  // the way: the provider's dependents-guard must fire first, deterministically
+  // (with equal budgets the two guards race — either unwedge path is valid)
+  const root = createRoot({ unloadGuardTimeoutMs: 100, unloadInverseGuardTimeoutMs: 60_000, onEvent: (e) => events.push(e) })
   root.ctx.use({
     name: 'stuck-consumer',
     inject: ['svc'],

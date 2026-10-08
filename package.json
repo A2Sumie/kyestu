@@ -21,8 +21,11 @@
     "typecheck": "tsc -p tsconfig.typecheck.json"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "bun-types": "^1.2.0"
+    "@stryker-mutator/core": "^10.0.0",
+    "bun-types": "^1.2.0",
+    "fast-check": "^4.10.0",
+    "import-meta-resolve": "^4.2.0",
+    "typescript": "^5.5.0"
   },
   "dependencies": {
     "@kyestu/log": "workspace:*",

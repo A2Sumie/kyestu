@@ -33,11 +33,14 @@ export type TaintPhase = 'inverse' | 'guard' | 'apply' | 'listener'
 export type KyestuEvent =
   | { type: 'lifecycle'; fiber: string; from: LifecycleState; to: LifecycleState }
   | { type: 'taint'; fiber: string; phase: TaintPhase; error: unknown }
-  | { type: 'timeout'; fiber: string; waiting: string[] }
+  /** dependents: a provider forced past stuck dependents (waiting = their names); inverses: a fiber abandoned its own hanging inverses */
+  | { type: 'timeout'; fiber: string; waiting: string[]; phase?: 'dependents' | 'inverses' }
 
 export interface KyestuOptions {
   name?: string
   /** max time an unloading provider waits for dependents before forcing recovery */
   unloadGuardTimeoutMs?: number
+  /** max time a fiber waits for its OWN inverses before abandoning them loudly (taint + inverses-phase timeout event); defaults to unloadGuardTimeoutMs. A separate knob breaks the tie when a provider's dependents-guard and the dependent's own inverse-guard would fire at the same instant */
+  unloadInverseGuardTimeoutMs?: number
   onEvent?: Listener<KyestuEvent>
 }

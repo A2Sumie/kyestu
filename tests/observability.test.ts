@@ -8,6 +8,7 @@ import { defineAll } from '../src/components'
 import { statusView } from '../src/components/api'
 import { Bus } from '../src/components/bus'
 import { SessionHealthBoard } from '../src/pipeline/session-health'
+import { logRuntimeEvent } from '../src/runtime-log'
 
 // ---------------------------------------------------------------------------
 // Observability surface (review §2.5/§3.3): the runtime event stream must
@@ -32,7 +33,9 @@ test('onEvent receives taint events when a fiber inverse fails during unload', a
 
 test('onEvent receives unload-guard timeout events naming the stuck dependents', async () => {
   const events: KyestuEvent[] = []
-  const root = createRoot({ unloadGuardTimeoutMs: 100, onEvent: (e) => events.push(e) })
+  // huge inverse-guard budget: the dependent's own reaper stays out of the
+  // race, so the provider's dependents-guard fires deterministically
+  const root = createRoot({ unloadGuardTimeoutMs: 100, unloadInverseGuardTimeoutMs: 60_000, onEvent: (e) => events.push(e) })
   root.ctx.use({
     name: 'stuck-consumer',
     inject: ['svc'],
@@ -42,7 +45,7 @@ test('onEvent receives unload-guard timeout events naming the stuck dependents',
   await root.idle()
   await provider.dispose()
   const timeout = events.find((e) => e.type === 'timeout')
-  expect(timeout).toMatchObject({ type: 'timeout', fiber: 'provider', waiting: ['stuck-consumer'] })
+  expect(timeout).toMatchObject({ type: 'timeout', fiber: 'provider', waiting: ['stuck-consumer'], phase: 'dependents' })
   // no root.dispose(): the stuck consumer's inverse never resolves by design
   // (same pattern as lifecycle.test.ts guard-timeout test)
 })
@@ -150,4 +153,38 @@ test('session channel: keepalive logs broken/quarantined transitions and expirin
     console.log = realLog
     await root.dispose()
   }
+})
+
+test('logRuntimeEvent renders timeout phases distinctly (dependents list / own inverses / unknown)', () => {
+  // mutation-hardening for the entry-shell renderer (src/runtime-log.ts):
+  // every branch of the waiting-ternary and the join separator are pinned.
+  const errors: string[] = []
+  const warns: string[] = []
+  const logs: string[] = []
+  const realError = console.error
+  const realWarn = console.warn
+  const realLog = console.log
+  console.error = (...args: unknown[]) => void errors.push(args.map(String).join(' '))
+  console.warn = (...args: unknown[]) => void warns.push(args.map(String).join(' '))
+  console.log = (...args: unknown[]) => void logs.push(args.map(String).join(' '))
+  try {
+    logRuntimeEvent({ type: 'timeout', fiber: 'f1', waiting: ['a', 'b'], phase: 'dependents' })
+    logRuntimeEvent({ type: 'timeout', fiber: 'f2', waiting: [], phase: 'inverses' })
+    logRuntimeEvent({ type: 'timeout', fiber: 'f3', waiting: [] })
+    logRuntimeEvent({ type: 'taint', fiber: 'f4', phase: 'guard', error: new Error('kaboom') })
+    logRuntimeEvent({ type: 'lifecycle', fiber: 'f5', from: 'INACTIVE', to: 'LOADING' })
+  } finally {
+    console.error = realError
+    console.warn = realWarn
+    console.log = realLog
+  }
+  expect(errors).toHaveLength(3)
+  expect(errors[0]).toContain('f1')
+  expect(errors[0]).toContain('a, b') // join separator
+  expect(errors[1]).toContain('(own inverses)') // inverses phase named
+  expect(errors[2]).toContain('(unknown)') // phase-less timeout falls through
+  expect(warns).toHaveLength(1)
+  expect(warns[0]).toContain('f4')
+  expect(logs).toHaveLength(1)
+  expect(logs[0]).toContain('f5 INACTIVE -> LOADING')
 })

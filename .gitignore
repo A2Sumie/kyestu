@@ -12,3 +12,8 @@ cookies/
 *.cookies.txt
 .env
 
+
+# test tooling artifacts
+.stryker-tmp/
+reports/mutation/
+tests/.transition-trace.jsonl

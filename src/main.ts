@@ -7,7 +7,7 @@ import { compileConfig } from './config/schema'
 import { defineAll } from './components'
 import { resolveEnvStrings } from './config/env'
 import { statusView } from './components/api'
-import type { KyestuEvent } from './core/types'
+import { logRuntimeEvent } from './runtime-log'
 
 const configPath = process.argv[2] ?? process.env.KYESTU_CONFIG ?? 'kyestu.config.yaml'
 
@@ -29,18 +29,7 @@ const INFRA_DEFAULTS: EntryDef[] = [
   { id: 'browser-pool', use: 'infra/browser-pool', with: { cache_root: process.env.CACHE_DIR ?? './cache' } },
 ]
 
-// runtime event stream (D2): lifecycle transitions at info level; taints and
-// unload-guard timeouts must be loud — they are the only production visibility
-// into recovery faults and forced unloads (review §2.5)
-function logRuntimeEvent(event: KyestuEvent): void {
-  if (event.type === 'taint') {
-    console.warn(`[kyestu] taint: ${event.fiber} (${event.phase}):`, event.error)
-  } else if (event.type === 'timeout') {
-    console.error(`[kyestu] unload guard timeout: ${event.fiber} forced, waiting on ${event.waiting.join(', ')}`)
-  } else {
-    console.log(`[kyestu] lifecycle: ${event.fiber} ${event.from} -> ${event.to}`)
-  }
-}
+
 
 async function main() {
   const root: Root = createRoot({ name: 'kyestu', onEvent: logRuntimeEvent })

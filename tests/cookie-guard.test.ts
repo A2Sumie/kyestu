@@ -11,6 +11,8 @@ import {
   staggerDelayMs,
 } from '../src/pipeline/session-health'
 import { checkupJar, ExpiringLatch, parseNetscapeCookieLine } from '../src/pipeline/jar-checkup'
+import { KyestuDb, defaultMigrationsDir } from '../src/components/db'
+import { ServiceStateStore, sessionHealthStore } from '../src/pipeline/service-state'
 import type { Bus } from '../src/components/bus'
 
 // ---------------------------------------------------------------------------
@@ -518,3 +520,195 @@ test('⑥ legacy config (importer output shape) drives the service end to end', 
     process.env.PATH = prevPath
   }
 })
+
+// ---------------------------------------------------------------------------
+// ②c generation guard on the job continuation (same ghost-write class as
+// crawler's round guard / router's `alive` flag): a keepalive job that
+// outlives its fiber generation must not board.record into the shared store —
+// a stale success would heal (overwrite) a quarantine the new generation
+// just persisted, and the ghost value is what the next restart rehydrates.
+// ---------------------------------------------------------------------------
+
+test('②c stale generation: an in-flight job completing after its unload must not heal a new quarantine in the store', async () => {
+  const db = new KyestuDb(':memory:')
+  db.migrate(defaultMigrationsDir)
+  const kv = new ServiceStateStore(db)
+  const store = sessionHealthStore(kv)
+  const KEY = 'sess-ghost'
+
+  // gen1: board + service with a browser job parked mid-navigation
+  const board1 = new SessionHealthBoard({ store })
+  let releaseNav!: () => void
+  const gate = new Promise<void>((r) => (releaseNav = r))
+  let gen1Alive = true
+  const page = {
+    goto: async () => {
+      await gate
+    },
+    evaluate: async () => false, // no login entrypoint matched: the session reads as alive
+    close: async () => {},
+  }
+  const service1 = new CookieKeepaliveService(
+    [{ kind: 'browser', name: 'b1', session_profile: KEY, url: 'https://example.com', settle_ms: 0 }],
+    {
+      browser: { createPage: async () => page } as any,
+      board: board1,
+      bus: null,
+      alive: () => gen1Alive,
+      sleep: async () => {},
+    },
+  )
+  const run = service1.runNow('b1')
+  await until(() => service1.status().find((s) => s.name === 'b1')?.runs === 1, 2000, 'gen1 job in flight')
+
+  // the fiber unloads mid-job (cascade reload); gen2's fresh board hydrates
+  // from the same store and quarantines the key
+  gen1Alive = false
+  const board2 = new SessionHealthBoard({ store })
+  board2.record(KEY, false, new Error('401 login required'))
+  board2.record(KEY, false, new Error('401 login required'))
+  expect(board2.snapshot().find((s) => s.key === KEY)!.state).toBe('quarantined')
+
+  // gen1's navigation finally resolves: the stale success must not touch the
+  // shared store (pre-fix it wrote fresh over the quarantine)
+  releaseNav()
+  await run
+  const persisted = JSON.parse(kv.get(`session-health:${KEY}`)!)
+  expect(persisted.state).toBe('quarantined')
+  expect(board2.snapshot().find((s) => s.key === KEY)!.state).toBe('quarantined')
+  db.close()
+})
+
+test('②d stale generation: an in-flight job FAILING after its unload must not taint a healthy persisted value', async () => {
+  // symmetric to ②c, pinning the catch-path generation guard (mutation-
+  // hardening): a stale failure outliving its fiber must skip board.record
+  // just like a stale success — otherwise the ghost failure overwrites the
+  // new generation's persisted healthy state.
+  const db = new KyestuDb(':memory:')
+  db.migrate(defaultMigrationsDir)
+  const kv = new ServiceStateStore(db)
+  const store = sessionHealthStore(kv)
+  const KEY = 'sess-ghost-fail'
+
+  const board1 = new SessionHealthBoard({ store })
+  let releaseNav!: () => void
+  const gate = new Promise<void>((r) => (releaseNav = r))
+  let gen1Alive = true
+  const page = {
+    goto: async () => {
+      await gate
+      throw new Error('net::ERR_ABORTED') // the navigation fails once released
+    },
+    evaluate: async () => false,
+    close: async () => {},
+  }
+  const service1 = new CookieKeepaliveService(
+    [{ kind: 'browser', name: 'b1', session_profile: KEY, url: 'https://example.com', settle_ms: 0 }],
+    {
+      browser: { createPage: async () => page } as any,
+      board: board1,
+      bus: null,
+      alive: () => gen1Alive,
+      sleep: async () => {},
+    },
+  )
+  const run = service1.runNow('b1')
+  await until(() => service1.status().find((s) => s.name === 'b1')?.runs === 1, 2000, 'gen1 job in flight')
+
+  // the fiber unloads mid-job; gen2's board records positive evidence and the
+  // store now holds a healthy persisted value
+  gen1Alive = false
+  const board2 = new SessionHealthBoard({ store })
+  board2.record(KEY, true)
+  expect(JSON.parse(kv.get(`session-health:${KEY}`)!).state).toBe('fresh')
+
+  // gen1's navigation finally rejects: the stale failure must not touch the
+  // shared store (a ghost suspect/broken row is what the next restart would
+  // otherwise rehydrate)
+  releaseNav()
+  await run
+  expect(JSON.parse(kv.get(`session-health:${KEY}`)!).state).toBe('fresh')
+  expect(board2.snapshot().find((s) => s.key === KEY)!.state).toBe('fresh')
+  db.close()
+})
+
+test('②e wiring: the component injects alive = fiber.isCurrent(generation), so a cascade reload disarms gen1', async () => {
+  // component-level pin of the alive SEAM WIRING (mutation-hardening): ②c/②d
+  // drive the service with a hand-injected alive flag; this one drives a real
+  // fiber reload (pool provider swap) and observes the store through the
+  // component's own wiring — the only level where
+  //   alive: () => fiber.isCurrent(generation)
+  // itself is exercised.
+  const { dir, restore } = makeStubDir('kyestu-ka-wire-')
+  const jar = join(dir, 'ycookies.txt')
+  writeFileSync(jar, '.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tx\n')
+  const KEY = 'sess-wire'
+  const realRandom = Math.random
+  Math.random = () => 0
+  try {
+    const root = createRoot({ unloadGuardTimeoutMs: 2000 })
+    const loader = new Loader(root, defineAll(createRegistry()))
+    let releaseGen1!: () => void
+    let releaseGen2!: () => void
+    const page1 = {
+      goto: async () => {
+        await new Promise<void>((r) => (releaseGen1 = r))
+      },
+      evaluate: async () => false, // session reads alive → gen1's stale result is a SUCCESS
+      close: async () => {},
+    }
+    const page2 = {
+      goto: async () => {
+        await new Promise<void>((r) => (releaseGen2 = r))
+      },
+      evaluate: async () => false,
+      close: async () => {},
+    }
+
+    await loader.load([
+      { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
+      { id: 'bus', use: 'infra/bus' },
+      keepaliveEntry(jar, {
+        jobs: [{ kind: 'browser', name: 'b1', session_profile: KEY, url: 'https://example.com', settle_ms: 0, interval_seconds: 3600 }],
+      }),
+    ])
+    const pool1 = root.ctx.use({ name: 'pool1', apply: (ctx) => void ctx.set('browser', { createPage: async () => page1 }) })
+    await root.idle()
+    const serviceOf = () => root.ctx.get<NodeHandle>(nodeKey('cookie-keepalive'))?.api<CookieKeepaliveService>()
+    await until(() => serviceOf()?.status().find((s) => s.name === 'b1')?.runs === 1, 5000, 'gen1 job in flight')
+    const service1 = serviceOf()!
+
+    // cascade reload: pool provider swap refreshes the dependent keepalive
+    // fiber in place (generation 2, fresh board); gen1's job is still parked
+    const p1Disposed = pool1.dispose()
+    root.ctx.use({ name: 'pool2', apply: (ctx) => void ctx.set('browser', { createPage: async () => page2 }) })
+    await until(() => serviceOf() !== undefined && serviceOf() !== service1, 5000, 'keepalive reloaded to gen2')
+    const fiber = loader.fiber('cookie-keepalive')!
+    await until(() => fiber.state === 'ACTIVE', 5000, 'gen2 active')
+    expect(fiber.generation).toBeGreaterThan(1)
+
+    // gen2's board quarantines the key (write-through to the shared store)
+    const board2 = root.ctx.get<SessionHealthBoard>('cookie-health')!
+    board2.record(KEY, false, new Error('401 login required'))
+    board2.record(KEY, false, new Error('401 login required'))
+    expect(board2.snapshot().find((s) => s.key === KEY)!.state).toBe('quarantined')
+
+    // gen1's navigation finally resolves: with the correct wiring the stale
+    // success is disarmed; a broken seam (alive always truthy) would heal the
+    // quarantine in the shared store — the ghost the next restart rehydrates
+    releaseGen1()
+    await Bun.sleep(100)
+    const db = root.ctx.get<KyestuDb>('db')!
+    const persisted = JSON.parse(new ServiceStateStore(db).get(`session-health:${KEY}`)!)
+    expect(persisted.state).toBe('quarantined')
+
+    releaseGen2() // let gen2's parked job settle before teardown
+    await Bun.sleep(50)
+    await root.dispose()
+    await p1Disposed
+    await loader.dispose()
+  } finally {
+    Math.random = realRandom
+    restore()
+  }
+}, 20_000)

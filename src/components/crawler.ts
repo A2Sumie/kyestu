@@ -168,6 +168,7 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
       const bus = ctx.get<Bus>('bus')!
       const browser = ctx.get<BrowserSessionPool>('browser') ?? null
       const fiber = ctx.fiber!
+      const generation = fiber.generation // captured for the round guards below
       const entryId = String(config.__id)
       // cooldowns persist to service_state scoped by entry id: per-target
       // isolation (full-url keys) carries across rebuilds/restarts, and an
@@ -292,6 +293,16 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
                 if (!shouldRetry(classifyCrawlError(error), platform)) break
               }
             }
+            // generation guard (persistOne's fiber.wrap discipline, extended
+            // to the round continuation): a round that outlived its own
+            // generation — a rebuild/reload landed while the fetch was in
+            // flight — must not write cooldowns or feed the health board.
+            // The cooldown store (service_state) and the board (coeffect)
+            // are shared with the new generation, so stale bookkeeping is a
+            // ghost write past the runtime's guard (router.ts pins the same
+            // rule with its `alive` flag). The fetch itself is not cancelled
+            // (D18 §5 emission/acquisition boundary), only its bookkeeping.
+            if (!fiber.isCurrent(generation)) return
             if (succeeded) {
               cooldowns.succeed(url)
               board?.record(sessionKey, true)
@@ -319,14 +330,18 @@ export function makeCrawlerComponent(kind: string): Component<Record<string, any
         }
       }
 
+      // the tick entry is generation-guarded too: while the fiber is
+      // UNLOADING (e.g. waiting on dependents) a due tick must not start a
+      // new round against the platform
+      const guardedRound = fiber.wrap(round)
       ctx.effect(() => {
         const timer = setInterval(() => {
           const now = Math.floor(Date.now() / 1000)
           if (now < nextAt) return
           nextAt = schedule ? (nextRunAt(schedule, now, entryId) ?? now + DEFAULT_INTERVAL_SECONDS) : now + DEFAULT_INTERVAL_SECONDS
-          round().catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
+          guardedRound()?.catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
         }, tickSeconds * 1000)
-        round().catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
+        guardedRound()?.catch((error) => ctx.root.reportTaint(ctx.fiber, 'apply', error))
         return () => {
           clearInterval(timer)
           void liveRelay?.stopAll()

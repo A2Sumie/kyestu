@@ -210,9 +210,18 @@ export class Context {
     return fiber
   }
 
+  /** swap in a fresh accumulator: a zombie drain keeps its captured array and can never pop the next generation's inverses */
+  detachAccumulator(): void {
+    this.accumulator = []
+  }
+
   async runAccumulated(): Promise<void> {
-    while (this.accumulator.length > 0) {
-      const dispose = this.accumulator.pop()!
+    // capture the reference: after a guard-timeout detach, a still-hanging
+    // drain keeps popping the detached array and can never reach inverses a
+    // later generation registered into the fresh one
+    const accumulator = this.accumulator
+    while (accumulator.length > 0) {
+      const dispose = accumulator.pop()!
       try {
         await dispose()
       } catch (error) {
@@ -229,10 +238,12 @@ export class Root {
   readonly store = new Map<Realm, Map<Key, StoreEntry>>()
   readonly name: string
   readonly unloadGuardTimeoutMs: number
+  readonly unloadInverseGuardTimeoutMs: number
 
   constructor(options: KyestuOptions = {}) {
     this.name = options.name ?? 'kyestu'
     this.unloadGuardTimeoutMs = options.unloadGuardTimeoutMs ?? 15000
+    this.unloadInverseGuardTimeoutMs = options.unloadInverseGuardTimeoutMs ?? this.unloadGuardTimeoutMs
     this.ctx = new Context(this, null)
     if (options.onEvent) this.emitter.on(options.onEvent)
   }
@@ -247,7 +258,16 @@ export class Root {
       table = new Map()
       this.store.set(realm, table)
     }
-    if (table.has(key)) throw new Error(`coeffect key already provided: ${String(key)}`)
+    const existing = table.get(key)
+    if (existing) {
+      // succession: a RETIRING provider (dispose called) has semantically left
+      // (L-Leave) — its lingering physical binding waits for its inverses and
+      // must not kill the replacement on the single-source discipline. The
+      // old fiber's deferred inverse is value-guarded (removeEntryIf), so it
+      // can never remove the successor's binding. Any other conflict (an
+      // active/loading/root-owned binding) stays a hard error.
+      if (!existing.owner?.retired) throw new Error(`coeffect key already provided: ${String(key)}`)
+    }
     table.set(key, { value, owner: ctx.ownerFiber() })
   }
 
@@ -469,7 +489,7 @@ export class Fiber {
     this.root.notifyProvidedBy(this)
     this.inertia = (async () => {
       await this.waitDependents()
-      await this.ctx.runAccumulated()
+      await this.runInversesGuarded()
       this.committed = null
       this.inertia = null
       if (outcome) {
@@ -498,12 +518,41 @@ export class Fiber {
       const remaining = deadline - Date.now()
       if (remaining <= 0) {
         const waiting = blocking.map((fiber) => fiber.name)
-        this.root.emitter.emit({ type: 'timeout', fiber: this.name, waiting })
+        this.root.emitter.emit({ type: 'timeout', fiber: this.name, waiting, phase: 'dependents' })
         this.taints.push({ phase: 'guard', error: new Error(`unload guard timeout, forced; dependents: ${waiting.join(', ')}`), at: Date.now() })
         return
       }
       await Promise.race([...blocking.map((fiber) => fiber.nextStateChange()), sleep(Math.min(25, remaining))])
     }
+  }
+
+  /**
+   * A fiber's own inverses get the same guard as its dependents wait: a
+   * hanging inverse must not wedge the fiber in UNLOADING forever (and hold
+   * root.dispose() with it). On timeout the fiber taints ITSELF, emits an
+   * inverses-phase timeout event, detaches the accumulator — the zombie
+   * drain keeps its captured array and can never pop a later generation's
+   * inverses — and proceeds. Recovery of the hanging acquisition is
+   * abandoned loudly, never silently.
+   */
+  private async runInversesGuarded(): Promise<void> {
+    const drain = this.ctx.runAccumulated()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const winner = await Promise.race([
+      drain.then(() => 'drained' as const),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), this.root.unloadInverseGuardTimeoutMs)
+      }),
+    ])
+    if (timer) clearTimeout(timer)
+    if (winner === 'drained') return
+    this.root.reportTaint(
+      this,
+      'guard',
+      new Error(`unload guard timeout: own inverses did not complete within ${this.root.unloadInverseGuardTimeoutMs}ms; the rest are abandoned (their acquisitions may leak)`),
+    )
+    this.root.emitter.emit({ type: 'timeout', fiber: this.name, waiting: [], phase: 'inverses' })
+    this.ctx.detachAccumulator()
   }
 
   private pruneIfDead(): void {

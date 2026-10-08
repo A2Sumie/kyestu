@@ -202,6 +202,14 @@ export interface KeepaliveDeps {
   now?: () => number
   /** test seam: override Bun.sleep-style settle */
   sleep?: (ms: number) => Promise<void>
+  /**
+   * generation guard: false once the owning fiber left this service's
+   * generation. A job that outlives its generation must not board.record —
+   * the board/store belong to the new generation, so a stale success would
+   * heal a quarantine the new generation just persisted (same ghost-write
+   * class as router's `alive` flag and the crawler round guard).
+   */
+  alive?: () => boolean
 }
 
 export class CookieKeepaliveService {
@@ -335,11 +343,16 @@ export class CookieKeepaliveService {
     try {
       if (job.kind === 'ytdlp') await this.runYtdlp(job, key)
       else await this.runBrowser(job, key)
+      // post-await generation guard: the job outlived its fiber generation —
+      // skip all bookkeeping (the store write is the hazardous half; the
+      // per-generation state view is moot either way)
+      if (!(this.deps.alive?.() ?? true)) return
       state.lastOk = true
       state.lastError = null
       state.consecutiveFailures = 0
       this.deps.board.record(key, true)
     } catch (error) {
+      if (!(this.deps.alive?.() ?? true)) return
       state.lastOk = false
       state.lastError = error instanceof Error ? error.message : String(error)
       state.consecutiveFailures += 1
@@ -451,11 +464,17 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
     // (consumers ctx.get('cookie-health') — Def 24), not the handle.
     ctx.set('cookie-health', board)
 
+    const fiber = ctx.fiber!
+    const generation = fiber.generation // captured for the service's alive seam
     const service = new CookieKeepaliveService(jobs, {
       browser,
       board,
       bus,
       staggerMaxMs: config.stagger_max_ms ?? DEFAULT_STAGGER_MAX_MS,
+      // in-flight jobs completing after this generation unloads must not
+      // write the shared board/store (isCurrent covers the whole retreat
+      // window, stricter than an inverse-time flag)
+      alive: () => fiber.isCurrent(generation),
     }, {
       // wire the declared config key through — it was accepted by the config
       // interface but never reached the ExpiringLatch (dead key, review §5.2-2)
@@ -480,7 +499,10 @@ export const cookieKeepaliveComponent: Component<CookieKeepaliveConfig> = {
         if (timers.has(index)) return
         const name = jobName(job, index)
         const timer = setTimeout(() => {
-          timers.delete(index)
+          // a callback that outlived the inverse (engine let a matured timer
+          // fire despite clearTimeout) finds the table cleared: it must not
+          // touch the counter of a dead generation (would drive it negative)
+          if (!timers.delete(index)) return
           service.armedTimers -= 1
           if (disposed) return
           void service

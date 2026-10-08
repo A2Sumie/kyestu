@@ -229,9 +229,19 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     const owners = Object.entries(crawlerProcessor)
       .filter(([, p]) => p === processorId)
       .map(([c]) => c)
+    if (owners.length === 0) {
+      warnings.push(`processor-formatter: processor '${processorId}' has no owning crawler; formatter link(s) [${formatterIds.join(', ')}] skipped`)
+      continue
+    }
     for (const crawlerName of owners) {
       for (const formatterId of formatterIds) {
-        pushRoute(crawlerName, [processorId, formatterId], formatterTarget[formatterId] ?? [])
+        // the processor stays OUT of the via chain: the crawler->processor
+        // service edge below already wires crawl-time translation (the
+        // crawler needs the processor's api), and the formatter renders the
+        // translated article from the db. Putting the processor in via made
+        // it need the crawler while the crawler needs it — a dependency
+        // cycle that compileConfig rejects, bricking the imported config.
+        pushRoute(crawlerName, [formatterId], formatterTarget[formatterId] ?? [])
       }
     }
   }
