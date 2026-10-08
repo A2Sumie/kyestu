@@ -13,6 +13,7 @@ import {
   writeSync,
 } from 'fs'
 import { join } from 'path'
+import { assertSafeOutboundUrl, type UrlPolicy } from './net-guard'
 
 /**
  * Media acquisition: default HTTP downloader into a content-addressed local
@@ -38,6 +39,8 @@ export interface MediaStoreOptions {
   maxTotalBytes?: number
   /** objects older than this are eviction candidates when the budget is tight */
   retentionDays?: number
+  /** outbound URL policy for content-derived media urls (default: block-private) */
+  urlPolicy?: UrlPolicy
 }
 
 const DEFAULT_MAX_OBJECT_BYTES = 256 * 1024 * 1024
@@ -65,6 +68,7 @@ export class MediaStore {
   private readonly maxObjectBytes: number
   private readonly maxTotalBytes: number
   private readonly retentionDays: number
+  private readonly urlPolicy: UrlPolicy | undefined
   private writeSeq = 0
 
   constructor(cacheRoot: string, options: MediaStoreOptions = {}) {
@@ -73,6 +77,7 @@ export class MediaStore {
     this.maxObjectBytes = options.maxObjectBytes ?? envInt('KYESTU_MEDIA_MAX_BYTES', DEFAULT_MAX_OBJECT_BYTES)
     this.maxTotalBytes = options.maxTotalBytes ?? envInt('KYESTU_MEDIA_CACHE_MAX_BYTES', DEFAULT_MAX_TOTAL_BYTES)
     this.retentionDays = options.retentionDays ?? envInt('KYESTU_MEDIA_RETENTION_DAYS', DEFAULT_RETENTION_DAYS)
+    this.urlPolicy = options.urlPolicy
     this.cleanupTempFiles()
   }
 
@@ -90,6 +95,10 @@ export class MediaStore {
   async download(url: string, options: { headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<string> {
     const existing = this.has(url)
     if (existing) return existing
+    // content-derived destination policy (daybreak finding 4, phase 1): a cache
+    // hit is already-vetted local bytes, so the check only runs before the
+    // request itself
+    await assertSafeOutboundUrl(url, { policy: this.urlPolicy })
     const res = await fetch(url, {
       headers: options.headers,
       signal: AbortSignal.timeout(options.timeoutMs ?? 60_000),

@@ -1,6 +1,6 @@
 # 安全扫描整改清单 — daybreak 2026-10-08
 
-> 性质：外部静态安全扫描（GPT daybreak / codex-security-plugin 0.1.22）的分级整改清单。基线是冻结 revision `5ce992a963e0bf9a2e60daebd7fb69b97a3162c1`（= 当时 HEAD）。原始产物在 `~/Downloads/daybreak/`（`report.md` / `findings.json` / `coverage.json` / `scan-manifest.json`，scan id `a730e69a-7a64-4f74-b339-7d890c2650b3`）。**2026-10-09：必改四条已修并提交，其余条目按下表挂起/待办。**
+> 性质：外部静态安全扫描（GPT daybreak / codex-security-plugin 0.1.22）的分级整改清单。基线是冻结 revision `5ce992a963e0bf9a2e60daebd7fb69b97a3162c1`（= 当时 HEAD）。原始产物在 `~/Downloads/daybreak/`（`report.md` / `findings.json` / `coverage.json` / `scan-manifest.json`，scan id `a730e69a-7a64-4f74-b339-7d890c2650b3`）。**2026-10-09：必改四条（R1）与 #7/#10/#4 一期（R2）已修并提交；#5/#6 依部署者裁决不改，#9 接受风险，#4 二期（浏览器/渲染/连接级 pin）见 §2.1。**
 >
 > 扫描是**静态、只读、离线**的：没跑应用/测试/浏览器，没有动态验证；结论里"可达性"按仓库内证据推断。与 `decisions.md` 的关系：采纳的条目落码后建议以 D19+ 回填决策（尤其 #3 控制面默认值与 #7 schedule 信任边界）。
 
@@ -23,11 +23,11 @@
 | 8 | curl transport 把 URL 当选项解析 | low | **必改** | `packages/spider/src/utils/http.ts` | 很小 | **已修 2026-10-09** |
 | 1 | 媒体全量缓冲、无字节/缓存上限 | medium | **必改** | `src/pipeline/media.ts` | 小-中 | **已修 2026-10-09** |
 | 2 | 卡片高度随正文无限增长，进程内同步栅格化 | medium | **必改** | `packages/render/template/img/DefaultCard.tsx`、`packages/render/src/img/index.ts`、`src/components/formatter.ts` | 小-中 | **已修 2026-10-09** |
-| 7 | LLM 输出可变成带凭证的 workflow 形态 schedule | low | **建议改**（有行为变更，需拍板） | `src/pipeline/schedule-webhook.ts` | 中 | 待办 |
-| 5 | `pip install biliup` 不锁版本 | low | **顺手改** | `Dockerfile` | 很小 | 待办 |
-| 10 | DB 导入 gzip/zstd 解压无输出上限 | low | **顺手改** | `src/pipeline/db-archive.ts`、`scripts/db-archive.ts` | 小 | 待办 |
-| 4 | 内容派生 URL 无出口校验（SSRF 面） | medium | **分期改** | 新建 `src/pipeline/net-guard.ts` + 三处接入；浏览器/渲染面二期 | 中 / 大 | 待办 |
-| 6 | `--cookie` 接受明文 cookie（argv 可见） | low | 看使用方式 | `tools/bili-dyn-visibility/bili_dyn_visibility.py` | 小 | 挂起 |
+| 7 | LLM 输出可变成带凭证的 workflow 形态 schedule | low | **建议改**（不损功能的收紧版） | `src/pipeline/schedule-webhook.ts` | 中 | **已修 2026-10-09（R2）** |
+| 5 | `pip install biliup` 不锁版本 | low | 不改（部署者裁决） | `Dockerfile` | — | **不改 2026-10-09**：构建在部署者自己的可信机器上，保持不锁以随重建吃上游修复 |
+| 10 | DB 导入 gzip/zstd 解压无输出上限 | low | **顺手改** | `src/pipeline/db-archive.ts`、`scripts/db-archive.ts` | 小 | **已修 2026-10-09（R2）** |
+| 4 | 内容派生 URL 无出口校验（SSRF 面） | medium | **分期改** | 新建 `src/pipeline/net-guard.ts` + 三处接入；浏览器/渲染面二期 | 中 / 大 | **一期已修 2026-10-09（R2，媒体 sink）**；浏览器/渲染面留二期 |
+| 6 | `--cookie` 接受明文 cookie（argv 可见） | low | 不改（可信同机） | `tools/bili-dyn-visibility/bili_dyn_visibility.py` | — | **不改 2026-10-09**：部署者同机属可信边界，argv 观察者已能读到等价凭证 |
 | 9 | 生产镜像 Chrome `--no-sandbox` | low | **接受风险**（记录） | 无（部署架构决策） | — | 记录 |
 
 ## 2. 已修四条（2026-10-09，含回归测试）
@@ -42,6 +42,24 @@
 - **[2]** 渲染面双闸：`sanitizeCardText` 是卡片文本的唯一咽喉（估算与渲染都走它），加 `CARD_TEXT_MAX_CHARS = 2000` 上限 + `…（以下省略）` 标注，幂等且不切开代理对；`articleParser` 把 `cardHeight` 钳到 `MAX_CARD_HEIGHT = CARD_WIDTH * 6 = 3600`（BaseCard 根节点 `overflow: hidden`，超长内容被裁切）；`ImgConverter.articleToImg` 对**所有**模板断言画布高度策略，超限抛错 → `formatter.renderCard` 已 catch → 退化纯文本。偏差：未做上游 bodyText 入库截断与独立渲染 worker（#2 计划里的可选项/二期），因为单卡上限已把栅格面积和布局循环封住。回归：`packages/render/test/DefaultCard.test.ts` 追加 ×4。
 
 验证：`bun test` 510 tests / 504 pass / 6 skip / 0 fail，`bun run typecheck` 干净（连跑两次，含一次跨文件全量复跑排除偶发）。
+
+### 2.1 二批（2026-10-09 R2）：#7 收紧、#10 上限、#4 一期
+
+部署形态确认（部署者自己的可信机器、尚未正式部署）后补做，均以"不损功能"为前提：
+
+- **[7] 按下游真实契约收紧**。读了下游 live-player 的实现（`live-player/src/lib/scheduler.ts`、`src/lib/db/schema.ts`）：它执行 `scheduleType ∈ {reminder, workflow, stream}`，`workflow`/`stream` 走 `payload.type ∈ {start,stop,update_network_stream}`——**这三个会真的起停推流**，所以"workflow 形态的 schedule"是功能本身，不能砍。改法：
+  - `scheduleType` 与 `payload.type` 白名单化（默认即下游已知集合，`KYESTU_SCHEDULE_TYPES` / `KYESTU_SCHEDULE_WORKFLOW_TYPES` 可扩）；未知 `scheduleType` 降级 `reminder`（条目照建，不丢）；`workflow`/`stream` 但 payload 不可执行 → 降级 `reminder`（否则下游执行时必报 `Unknown workflow type`）。
+  - 模型给的 `payload` 对象只在 `payload.type` 可执行时透传，否则一律走本地构造的 `idol_bbq_time_event_candidate` schema——自由形态对象不再进 schedule 服务。
+  - `externalKey` **命名空间化**为 `${sourceRef}:ext:${slug}`（派生 key 路径不变）。下游 `external_key` 是 UNIQUE 且按它 upsert，裸的模型 key 原本可以收编并覆盖任意既有日程（含别的来源/系统建的）。
+  - **契约变更**：显式 `externalKey` 不再原样透出（同源仍稳定、upsert 语义保留；跨源靠同一个 key 去重的能力没有了——原本也只能靠模型碰巧给对）。`tests/schedule-webhook.test.ts` 相应更新。
+  - **剩余风险**：发布者仍能驱动白名单内的 workflow（这正是该功能的用途）。要收这层得在下游做来源白名单 / 人工确认 / 按 scheduleType 独立鉴权，属 live-player 侧。
+- **[10] 解压上限**：gzip 流式解压 + 硬字节计数（超限中止），zstd 输出文件监控 + 超限 kill + 120s 超时，上限默认 2 GiB（`KYESTU_DB_IMPORT_MAX_BYTES` 或 `importDb({ maxExpandedBytes })`），临时文件照旧清理；补 gzip/zstd 炸弹回归。
+- **[4] 一期（媒体 sink）**：新建 `src/pipeline/net-guard.ts`——http(s) 校验 + 字面 IP/域名解析结果的私网/回环/链路本地（含 `169.254.169.254`）/CGNAT/多播/保留/IPv6 ULA/映射地址拒绝，接到 `MediaStore.download`（唯一"既发起请求又把字节转发出去"的 sink）。`infra/media-store` 新增 `url_policy` 配置键（`block-private` 默认 / `allow-private` 逃生），env 兜底 `KYESTU_URL_POLICY`。**已知局限**：不拦 DNS rebinding（需连接级 pin），浏览器导航/子请求与渲染资产加载留二期。
+- **[5] 不锁 biliup**（部署者裁决）：构建在可信机器上，保持不锁以随重建吃上游修复；风险记录在案。
+- **[6] 不改**：同机 argv 观察者已属可信边界（能读等价凭证），收益低于改动噪音。
+- **[9] 保持现状**：容器内 Chrome 沙箱仍关，风险接受；将来把浏览器拆独立容器/微VM 时再收。
+
+验证：`bun test` 518 tests / 512 pass / 6 skip / 0 fail，`bun run typecheck` 干净。新增回归：`tests/net-guard.test.ts`、`tests/db-archive.test.ts` 炸弹 ×2、`tests/schedule-webhook.test.ts` 收紧 ×1（及改写的 externalKey 断言）。
 
 ## 3. 必改四条的修法设计（备查，实施细节见 §2）
 
@@ -131,12 +149,12 @@
 
 `Dockerfile:71` `ENV NO_SANDBOX=true` → `src/components/browser-pool.ts:248-258` 给每个 Chrome 加 `--no-sandbox` + `--disable-setuid-sandbox`。容器内默认就得这么跑（除非配 userns/seccomp 让 Chrome 沙箱可用），改代码大概率把抓取搞挂。三条出路按代价排序：① 记录风险（本条现状）；② 支持 `KYESTU_BROWSER_SANDBOX=1` 时去掉两个 flag，由部署方自己配好沙箱环境；③ 浏览器拆到独立的无凭证/无 DB 挂载/限制出口的容器或微VM。属部署架构决策，不在本批。
 
-## 7. 开放问题（来自扫描，决定 #3/#4 的最终定级）
+## 7. 开放问题（来自扫描；2026-10-09 部署事实补充后更新）
 
-1. 生产哪些网络能打到 3000 端口？非空 API secret 是否在示例配置之外**总是**被强制？
-2. 有什么出口策略阻止 kyestu（含浏览器）访问内网/链路本地/云元数据地址？——没有的话 #4 一期是必需项，二期也要排期。
-3. 下游 schedule 服务执行哪些 workflow 类型与字段？是否独立鉴权？（决定 #3.1 的收紧范围）
-4. 生产的内存/磁盘配额与 `/proc` 可见性策略？（决定 #1/#2 的阈值取值）
+1. 生产哪些网络能打到 3000 端口？——**部署事实**：部署者自己的可信机器、尚未正式部署；端口是否对不受信网络可达仍取决于部署（compose 示例是全量发布）。#3 已改 fail-closed，此项风险已收。
+2. 出口策略？——**部分落地**：媒体 sink 有了 `net-guard`（block-private 默认，§2.1）；浏览器导航/子请求、渲染资产加载、连接级 DNS pin 仍无策略，属二期。
+3. 下游 schedule 语义与鉴权？——**已回答**（见 §2.1）：执行 `reminder`/`workflow`/`stream`，`workflow` 的 `payload.type = {start,stop,update_network_stream}`（会起停推流）；接收端只认共享 apiKey，**不**按 scheduleType/来源独立授权。这是 #7 剩余风险的根源，建议在 live-player 侧补来源白名单或人工确认。
+4. 内存/磁盘配额与 `/proc` 策略？——阈值已做成可配置（`KYESTU_MEDIA_MAX_BYTES` / `KYESTU_MEDIA_CACHE_MAX_BYTES` / `KYESTU_DB_IMPORT_MAX_BYTES`），部署时按机器实际调整。
 
 ## 8. 扫描覆盖与已判"无问题"的面
 

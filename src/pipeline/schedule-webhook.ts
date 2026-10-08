@@ -14,6 +14,51 @@ export interface ScheduleWebhookOptions {
   minConfidence?: number | null
   fetchImpl?: typeof fetch
   onWarn?: (message: string) => void
+  /** allowlisted scheduleType values (default: the downstream's reminder|workflow|stream) */
+  scheduleTypes?: string[]
+  /** allowlisted workflow payload.type values (default: the downstream's three stream actions) */
+  workflowTypes?: string[]
+}
+
+/**
+ * Model-output policy (daybreak 2026-10-08 finding 7). The downstream
+ * live-player scheduler executes scheduleType ∈ {reminder, workflow, stream}
+ * and, for workflow/stream, payload.type ∈ {start,stop,update_network_stream} —
+ * those three start and stop real network streams. Article text is
+ * publisher-controlled and reaches the model, so the write-back clamps the
+ * privileged shape to what the downstream can actually execute instead of
+ * forwarding whatever the model emitted. Extending the downstream means
+ * extending these lists (env: KYESTU_SCHEDULE_TYPES /
+ * KYESTU_SCHEDULE_WORKFLOW_TYPES); nothing outside them is dropped silently —
+ * it degrades to a reminder candidate, which still gets created.
+ */
+export interface SchedulePolicy {
+  scheduleTypes: string[]
+  workflowTypes: string[]
+}
+
+const DEFAULT_SCHEDULE_TYPES = ['reminder', 'workflow', 'stream']
+const DEFAULT_WORKFLOW_TYPES = ['start_network_stream', 'stop_network_stream', 'update_network_stream']
+
+function envList(name: string, fallback: string[]): string[] {
+  const raw = process.env[name]?.trim()
+  if (!raw) return fallback
+  const values = raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  return values.length ? values : fallback
+}
+
+export function resolveSchedulePolicy(options: ScheduleWebhookOptions = {}): SchedulePolicy {
+  return {
+    scheduleTypes: options.scheduleTypes?.length
+      ? options.scheduleTypes
+      : envList('KYESTU_SCHEDULE_TYPES', DEFAULT_SCHEDULE_TYPES),
+    workflowTypes: options.workflowTypes?.length
+      ? options.workflowTypes
+      : envList('KYESTU_SCHEDULE_WORKFLOW_TYPES', DEFAULT_WORKFLOW_TYPES),
+  }
 }
 
 export interface ScheduleWebhookResult {
@@ -98,15 +143,17 @@ function resolveExecutionTime(candidate: any): string {
   return stringValue(candidate?.executionTime) || stringValue(candidate?.starts_at)
 }
 
-function resolveScheduleType(candidate: any): string {
+function resolveScheduleType(candidate: any, explicitWorkflowShaped: boolean, policy: SchedulePolicy): string {
   const explicit = stringValue(candidate?.scheduleType)
-  if (explicit) return explicit
-  if (candidate?.payload?.type) return 'workflow'
-  return 'reminder'
+  let type = explicit || (explicitWorkflowShaped ? 'workflow' : 'reminder')
+  // unknown types are not forwarded (the downstream throws on them anyway) and
+  // a workflow/stream without an executable payload shape cannot run there
+  if (!policy.scheduleTypes.includes(type)) type = 'reminder'
+  if ((type === 'workflow' || type === 'stream') && !explicitWorkflowShaped) type = 'reminder'
+  return type
 }
 
 function stableEventKey(sourceRef: string, index: number, candidate: any): string {
-  if (candidate?.externalKey) return stringValue(candidate.externalKey)
   const stableSeed = {
     index,
     title: stringValue(candidate?.title),
@@ -114,11 +161,17 @@ function stableEventKey(sourceRef: string, index: number, candidate: any): strin
     sourceUrl: stringValue(candidate?.source_url) || stringValue(candidate?.sourceUrl),
   }
   const digest = createHash('sha256').update(JSON.stringify(stableSeed)).digest('hex').slice(0, 16)
-  return `${sourceRef}:event:${digest}`
+  const derived = `${sourceRef}:event:${digest}`
+  const explicit = stringValue(candidate?.externalKey)
+  if (!explicit) return derived
+  // model-supplied keys stay supported (they keep upserts stable across
+  // re-parses) but are namespaced under the source: externalKey is UNIQUE in
+  // the downstream and it upserts on it, so a bare model key could adopt — and
+  // overwrite — a schedule owned by another source or system (daybreak finding 7)
+  return `${sourceRef}:ext:${explicit.replace(/[^a-zA-Z0-9._:-]/g, '_').slice(0, 64)}`
 }
 
 function normalizePayload(candidate: any, sourceRef: string) {
-  if (candidate?.payload && typeof candidate.payload === 'object') return candidate.payload
   const members = Array.isArray(candidate?.members)
     ? candidate.members.map((item: unknown) => stringValue(item)).filter((item: string) => item.length > 0)
     : []
@@ -139,12 +192,24 @@ function normalizePayload(candidate: any, sourceRef: string) {
   }
 }
 
-export function buildScheduleWebhookPayload(candidate: any, sourceRef: string, index: number, apiKey: string | null) {
+export function buildScheduleWebhookPayload(
+  candidate: any,
+  sourceRef: string,
+  index: number,
+  apiKey: string | null,
+  policy: SchedulePolicy = resolveSchedulePolicy(),
+) {
   const title = stringValue(candidate?.title)
   const executionTime = resolveExecutionTime(candidate)
   if (!title || !executionTime) return null
   const date = new Date(executionTime)
   if (Number.isNaN(date.getTime())) return null
+
+  // a model payload is forwarded only when its type is a workflow the
+  // downstream can execute; anything else becomes the locally constructed
+  // candidate schema (no free-form object reaches the schedule service)
+  const rawPayload = candidate?.payload && typeof candidate.payload === 'object' ? candidate.payload : null
+  const workflowShaped = Boolean(rawPayload && policy.workflowTypes.includes(stringValue(rawPayload.type)))
 
   return {
     title,
@@ -154,10 +219,10 @@ export function buildScheduleWebhookPayload(candidate: any, sourceRef: string, i
       stringValue(candidate?.source_time_text) ||
       null,
     externalKey: stableEventKey(sourceRef, index, candidate),
-    scheduleType: resolveScheduleType(candidate),
+    scheduleType: resolveScheduleType(candidate, workflowShaped, policy),
     executionTime,
     recurrence: stringValue(candidate?.recurrence) || null,
-    payload: normalizePayload(candidate, sourceRef),
+    payload: workflowShaped ? rawPayload : normalizePayload(candidate, sourceRef),
     ...(apiKey ? { apiKey } : {}),
   }
 }
@@ -182,7 +247,7 @@ export async function writeSchedulesFromProcessorResult(
     const confidence = numberValue(candidate?.confidence)
     if (minConfidence !== null && (confidence === null || confidence < minConfidence)) continue
 
-    const payload = buildScheduleWebhookPayload(candidate, sourceRef, index, apiKey)
+    const payload = buildScheduleWebhookPayload(candidate, sourceRef, index, apiKey, resolveSchedulePolicy(options))
     if (!payload) continue
 
     try {

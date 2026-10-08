@@ -36,7 +36,7 @@ test('normalizeCandidates covers plans/items/tasks/array/single shapes', () => {
   expect(normalizeCandidates({ other: 1 })).toEqual([])
 })
 
-test('payload: stable key, explicit externalKey wins, missing title/time dropped', () => {
+test('payload: stable key, explicit externalKey namespaced under the source, missing title/time dropped', () => {
   const candidate = { title: 'SR 生放送', starts_at: '2026-08-20T20:00:00+09:00', confidence: 0.9, members: ['椎名桜月'] }
   const p1 = buildScheduleWebhookPayload(candidate, 'a1', 0, null)
   const p2 = buildScheduleWebhookPayload(candidate, 'a1', 0, null)
@@ -44,11 +44,77 @@ test('payload: stable key, explicit externalKey wins, missing title/time dropped
   expect(p1!.externalKey).toMatch(/^a1:event:[0-9a-f]{16}$/)
   expect(p1!.scheduleType).toBe('reminder')
   expect(p1!.payload.members).toEqual(['椎名桜月'])
-  expect(buildScheduleWebhookPayload({ externalKey: 'fixed', title: 't', executionTime: '2026-08-20T20:00:00Z' }, 'a1', 0, 'k')!.externalKey).toBe('fixed')
+  // explicit keys stay stable (upsert semantics) but can never adopt a record
+  // owned by another source: the downstream has a UNIQUE external_key and
+  // upserts on it (daybreak finding 7)
+  const explicit = buildScheduleWebhookPayload({ externalKey: 'fixed', title: 't', executionTime: '2026-08-20T20:00:00Z' }, 'a1', 0, 'k')!
+  expect(explicit.externalKey).toBe('a1:ext:fixed')
+  expect(explicit.externalKey).toBe(
+    buildScheduleWebhookPayload({ externalKey: 'fixed', title: 't', executionTime: '2026-08-20T20:00:00Z' }, 'a1', 1, 'k')!.externalKey,
+  )
+  expect(
+    buildScheduleWebhookPayload({ externalKey: 'fixed', title: 't', executionTime: '2026-08-20T20:00:00Z' }, 'a2', 0, 'k')!.externalKey,
+  ).toBe('a2:ext:fixed')
   expect(buildScheduleWebhookPayload({ starts_at: '2026-08-20' }, 'a1', 0, null)).toBeNull()
   expect(buildScheduleWebhookPayload({ title: 't' }, 'a1', 0, null)).toBeNull()
   expect(buildScheduleWebhookPayload({ title: 't', executionTime: 'not-a-date' }, 'a1', 0, null)).toBeNull()
   expect(buildScheduleWebhookPayload(candidate, 'a1', 0, 'apikey')!.apiKey).toBe('apikey')
+})
+
+test('payload: model output is clamped to the executable shapes the downstream knows', () => {
+  const base = { title: '配信', executionTime: '2026-08-20T20:00:00Z' }
+
+  // unknown scheduleType degrades to reminder instead of being forwarded
+  expect(buildScheduleWebhookPayload({ ...base, scheduleType: 'drop_tables' }, 'a1', 0, null)!.scheduleType).toBe('reminder')
+  // a workflow/stream entry without an executable payload cannot run downstream
+  // (it would hit "Unknown workflow type" at execution) -> reminder instead
+  expect(buildScheduleWebhookPayload({ ...base, scheduleType: 'stream' }, 'a1', 0, null)!.scheduleType).toBe('reminder')
+  expect(
+    buildScheduleWebhookPayload(
+      { ...base, scheduleType: 'stream', payload: { type: 'stop_network_stream', playerId: 1 } },
+      'a1',
+      0,
+      null,
+    )!.scheduleType,
+  ).toBe('stream')
+
+  // workflow payload passthrough only for types the downstream can execute
+  const workflow = buildScheduleWebhookPayload(
+    { ...base, scheduleType: 'workflow', payload: { type: 'start_network_stream', playerId: 3, source: 'rtmp://x/live' } },
+    'a1',
+    0,
+    null,
+  )!
+  expect(workflow.scheduleType).toBe('workflow')
+  expect(workflow.payload).toEqual({ type: 'start_network_stream', playerId: 3, source: 'rtmp://x/live' })
+
+  // an unknown payload.type never reaches the downstream as a free-form object
+  const hostile = buildScheduleWebhookPayload(
+    { ...base, scheduleType: 'workflow', payload: { type: 'start_network_stream', evil: true, playerId: 1 } },
+    'a1',
+    0,
+    null,
+    { scheduleTypes: ['reminder'], workflowTypes: [] },
+  )!
+  expect(hostile.scheduleType).toBe('reminder')
+  expect(hostile.payload.type).toBe('idol_bbq_time_event_candidate')
+  expect(hostile.payload).not.toHaveProperty('evil')
+
+  // workflow-shaped without an executable payload cannot run downstream -> reminder
+  expect(
+    buildScheduleWebhookPayload({ ...base, scheduleType: 'workflow', payload: { type: 'nuke' } }, 'a1', 0, null)!.scheduleType,
+  ).toBe('reminder')
+
+  // an operator can widen the lists for a downstream that grew new types
+  const widened = buildScheduleWebhookPayload(
+    { ...base, payload: { type: 'stop_network_stream', playerId: 1 } },
+    'a1',
+    0,
+    null,
+    { scheduleTypes: ['workflow'], workflowTypes: ['stop_network_stream'] },
+  )!
+  expect(widened.scheduleType).toBe('workflow')
+  expect(widened.payload.type).toBe('stop_network_stream')
 })
 
 test('writeSchedules: min confidence filter, per-candidate failure captured, empty without url', async () => {

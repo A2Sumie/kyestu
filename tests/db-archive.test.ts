@@ -3,6 +3,8 @@ import { Database } from 'bun:sqlite'
 import { mkdtempSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { gzipSync } from 'node:zlib'
+import { spawnSync } from 'child_process'
 import { exportDb, importDb, detectCodec, isSqliteFile, hasZstd } from '../src/pipeline/db-archive'
 
 function seedDb(path: string): void {
@@ -68,4 +70,43 @@ test('import rejects garbage and non-sqlite payloads', async () => {
   await expect(importDb(garbage, join(dir, 'x.db'))).rejects.toThrow('unknown archive format')
   expect(isSqliteFile(garbage)).toBe(false)
   await expect(exportDb(garbage, join(dir, 'o.gz'))).rejects.toThrow('not a sqlite database')
+})
+
+// ---------- expansion bounds (daybreak 2026-10-08 finding 10) ----------
+
+test('import refuses a gzip bomb at the expanded-byte cap and leaves nothing behind', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-dbarc-'))
+  const bomb = join(dir, 'bomb.db.gz')
+  // half a megabyte of zeros in a few hundred bytes of gzip
+  writeFileSync(bomb, gzipSync(Buffer.alloc(512 * 1024)))
+  const target = join(dir, 'restored.db')
+
+  await expect(importDb(bomb, target, { maxExpandedBytes: 4096 })).rejects.toThrow('expands beyond')
+  expect(existsSync(target)).toBeFalse()
+  expect(readdirSync(dir).some((f) => f.includes('.tmp-import'))).toBeFalse()
+})
+
+test('import refuses a zstd bomb at the expanded-byte cap', async () => {
+  if (!hasZstd()) return
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-dbarc-'))
+  const raw = join(dir, 'raw.bin')
+  const bomb = join(dir, 'bomb.db.zst')
+  writeFileSync(raw, Buffer.alloc(512 * 1024))
+  expect(spawnSync('zstd', ['-q', '-f', '-o', bomb, raw]).status).toBe(0)
+  const target = join(dir, 'restored.db')
+
+  await expect(importDb(bomb, target, { maxExpandedBytes: 4096 })).rejects.toThrow('exceeds the 4096 byte limit')
+  expect(existsSync(target)).toBeFalse()
+  expect(readdirSync(dir).some((f) => f.includes('.tmp-import'))).toBeFalse()
+})
+
+test('import still restores a real database under a sane cap', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-dbarc-'))
+  const src = join(dir, 'src.db')
+  const archive = join(dir, 'out.db.gz')
+  const restored = join(dir, 'restored.db')
+  seedDb(src)
+  await exportDb(src, archive, { codec: 'gzip' })
+  await importDb(archive, restored, { maxExpandedBytes: 1024 * 1024 })
+  expect(readRow(restored)).toBe('hello-迁移')
 })

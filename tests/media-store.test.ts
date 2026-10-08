@@ -9,6 +9,10 @@ import { MediaStore } from '../src/pipeline/media'
  * Media store resource policy (daybreak 2026-10-08 finding 1): remote responses
  * are streamed through a hard per-object byte counter, the cache volume has a
  * budget, and refused downloads leave neither a cache entry nor a *.part-* file.
+ *
+ * These cases drive the store against a local test server, so they opt into the
+ * allow-private URL policy; the block-private behaviour itself is covered by
+ * tests/net-guard.test.ts.
  */
 
 function storeDir(): string {
@@ -43,7 +47,7 @@ async function withServer(
 
 test('media store: downloads within budget and serves cache hits', async () => {
   const dir = storeDir()
-  const store = new MediaStore(dir, { maxObjectBytes: 1024 })
+  const store = new MediaStore(dir, { urlPolicy: 'allow-private', maxObjectBytes: 1024 })
   await withServer(() => 'hello-media', async (base) => {
     const path = await store.download(`${base}/a.jpg`)
     expect(readFileSync(path, 'utf8')).toBe('hello-media')
@@ -57,7 +61,7 @@ test('media store: downloads within budget and serves cache hits', async () => {
 
 test('media store: rejects a declared oversized response and leaves nothing behind', async () => {
   const dir = storeDir()
-  const store = new MediaStore(dir, { maxObjectBytes: 1024 })
+  const store = new MediaStore(dir, { urlPolicy: 'allow-private', maxObjectBytes: 1024 })
   await withServer(() => 'x'.repeat(4096), async (base) => {
     await expect(store.download(`${base}/big.bin`)).rejects.toThrow('media too large')
     expect(store.has(`${base}/big.bin`)).toBeNull()
@@ -68,7 +72,7 @@ test('media store: rejects a declared oversized response and leaves nothing behi
 
 test('media store: streams without a content-length and still hits the byte counter', async () => {
   const dir = storeDir()
-  const store = new MediaStore(dir, { maxObjectBytes: 1024 })
+  const store = new MediaStore(dir, { urlPolicy: 'allow-private', maxObjectBytes: 1024 })
   // chunked transfer: no content-length header to lean on, so only the
   // streamed counter can stop it
   await withServer(
@@ -89,7 +93,7 @@ test('media store: streams without a content-length and still hits the byte coun
 
 test('media store: evicts stale objects to stay inside the cache budget', async () => {
   const dir = storeDir()
-  const store = new MediaStore(dir, { maxObjectBytes: 4096, maxTotalBytes: 2048, retentionDays: 1 })
+  const store = new MediaStore(dir, { urlPolicy: 'allow-private', maxObjectBytes: 4096, maxTotalBytes: 2048, retentionDays: 1 })
   const stalePath = store.pathFor('stale-object')
   mkdirSync(join(stalePath, '..'), { recursive: true })
   writeFileSync(stalePath, Buffer.alloc(1800))
@@ -106,7 +110,7 @@ test('media store: evicts stale objects to stay inside the cache budget', async 
 
 test('media store: refuses a download the cache budget cannot hold', async () => {
   const dir = storeDir()
-  const store = new MediaStore(dir, { maxObjectBytes: 4096, maxTotalBytes: 1024, retentionDays: 1 })
+  const store = new MediaStore(dir, { urlPolicy: 'allow-private', maxObjectBytes: 4096, maxTotalBytes: 1024, retentionDays: 1 })
   await withServer(() => 'z'.repeat(1500), async (base) => {
     await expect(store.download(`${base}/too-big-for-budget.jpg`)).rejects.toThrow('media cache budget exceeded')
     expect(store.has(`${base}/too-big-for-budget.jpg`)).toBeNull()

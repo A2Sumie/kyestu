@@ -127,7 +127,7 @@ async function boot(tag: string, mocks: Mocks, opts: BootOptions) {
   await loader.load([
     { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
     { id: 'bus', use: 'infra/bus' },
-    { id: 'media-store', use: 'infra/media-store', with: { cache_root: join(dir, 'cache') } },
+    { id: 'media-store', use: 'infra/media-store', with: { cache_root: join(dir, 'cache'), url_policy: 'allow-private' } },
     { id: 'onebot', use: 'infra/onebot', with: { http_url: mocks.onebotBase } },
     {
       id: 'ja-zh',
@@ -373,7 +373,7 @@ test('short-circuit: crawler post_processors run extract and write schedules to 
     await loader.load([
       { id: 'db', use: 'infra/db', with: { path: ':memory:' } },
       { id: 'bus', use: 'infra/bus' },
-      { id: 'media-store', use: 'infra/media-store', with: { cache_root: join(dir, 'cache') } },
+      { id: 'media-store', use: 'infra/media-store', with: { cache_root: join(dir, 'cache'), url_policy: 'allow-private' } },
       {
         id: 'event-extract',
         use: 'processor/openai',
