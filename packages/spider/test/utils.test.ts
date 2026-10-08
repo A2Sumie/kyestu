@@ -187,3 +187,45 @@ test('HTTPClient bounds hanging requests with HttpTimeoutError', async () => {
         globalThis.fetch = originalFetch
     }
 })
+
+// ---------- argv/URL policy for the transports (daybreak 2026-10-08 finding 8) ----------
+
+test('HTTPClient.buildCurlArgs rejects option-shaped and non-http urls before any exec', () => {
+    for (const hostile of [
+        '--url=file:///etc/passwd',
+        '-o',
+        'file:///etc/passwd',
+        'ftp://example.com/x',
+        'data:text/plain,hi',
+        '',
+    ]) {
+        expect(() => HTTPClient.buildCurlArgs(hostile, {}, 1000)).toThrow('refusing non-http(s) url')
+    }
+})
+
+test('HTTPClient.buildCurlArgs terminates option parsing before the url and pins protocols', () => {
+    const args = HTTPClient.buildCurlArgs('https://example.com/watch?v=1', { 'x-a': 'b' }, 1500)
+
+    expect(args.slice(-2)).toEqual(['--', 'https://example.com/watch?v=1'])
+    expect(args.slice(args.indexOf('--proto') + 1, args.indexOf('--proto') + 2)).toEqual(['=http,https'])
+    expect(args.slice(args.indexOf('--proto-redir') + 1, args.indexOf('--proto-redir') + 2)).toEqual(['=http,https'])
+})
+
+test('HTTPClient transports refuse hostile urls before fetch/exec, even in permissive mode', async () => {
+    const originalFetch = globalThis.fetch
+    let fetched = false
+    globalThis.fetch = (async () => {
+        fetched = true
+        return new Response('x')
+    }) as any
+
+    try {
+        await expect(HTTPClient.download_webpage('file:///etc/passwd')).rejects.toThrow('refusing non-http(s) url')
+        await expect(
+            HTTPClient.download_webpage_curl('--url=file:///etc/passwd', {}, { throwOnError: false }),
+        ).rejects.toThrow('refusing non-http(s) url')
+        expect(fetched).toBeFalse()
+    } finally {
+        globalThis.fetch = originalFetch
+    }
+})

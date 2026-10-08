@@ -10,6 +10,7 @@ SNS 聚合转发系统（X / Instagram / TikTok / YouTube / 官网 → QQ / B站
 - [bus.md](docs/bus.md) — infra/bus 的频道与可靠性语义（哪些保证有、哪些没有、丢了谁兜底）
 - [parity-gap.md](docs/parity-gap.md) — 与 idol-bbq 生产的差异清单与处置状态
 - [ig-cookie-rotation.md](docs/ig-cookie-rotation.md) — IG cookie 轮换运维手册
+- [SECURITY-REVIEW-2026-10-08.md](docs/SECURITY-REVIEW-2026-10-08.md) — 外部安全扫描整改清单（daybreak，10 条分级；必改四条已修，余项挂起/待办）
 - 2026-08-16 两篇报告 — 可行性评估与 v1 落地总览（时点快照，数字以 git/代码为准）
 
 ## Quickstart
@@ -52,7 +53,7 @@ compose 见 [docker-compose.example.yml](docker-compose.example.yml)（build + e
 | 各 `cookie_file` | 配置内路径 | 平台 cookie；指到挂载卷内 |
 | `$KYESTU_DB_RECOVERY_MARKER`（默认 `/tmp/kyestu/db-recovered.json`） | env | B站 DB 恢复 marker，默认在容器 tmp 层、重建即丢；需保留就指到卷内 |
 
-健康检查：镜像内置 `HEALTHCHECK` 打 `/api/status`。若配置了 api secret，**必须经 `KYESTU_API_SECRET` env 注入**（配置里写 `secret: env:KYESTU_API_SECRET`），健康检查才能带同一个 Bearer；secret 直接写死在配置文件里则健康检查恒 401，此时改用 `docker inspect --format '{{json .State.Health}}' kyestu` 观察改为进程级判断，或自行覆盖 `--health-cmd`。注意 200 只证明控制面在服务——FAILED fiber 也返回 200，fiber 健康需对 payload 的 `state`/`taints` 做外部告警。
+健康检查：镜像内置 `HEALTHCHECK` 打 `/api/status`。若配置了 api secret，**必须经 `KYESTU_API_SECRET` env 注入**（配置里写 `secret: env:KYESTU_API_SECRET`），健康检查才能带同一个 Bearer；secret 直接写死在配置文件里则健康检查恒 401，此时改用 `docker inspect --format '{{json .State.Health}}' kyestu` 观察改为进程级判断，或自行覆盖 `--health-cmd`。注意 200 只证明控制面在服务——FAILED fiber 也返回 200，fiber 健康需对 payload 的 `state`/`taints` 做外部告警。**secret 为空时控制面不启动**（fail-closed，api 组件直接 FAILED）：要跑免鉴权的本地调试，显式在配置 api 里写 `allow_insecure: true` 或设 `KYESTU_API_INSECURE=1`，别用它对外。
 
 
 ## 测试

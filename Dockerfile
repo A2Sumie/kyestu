@@ -82,10 +82,11 @@ ENV XVFB_SCREEN="0 1600x1200x24"
 
 EXPOSE 3000
 
-# Liveness: /api/status. Auth is skipped server-side when no secret is
-# configured; when one is, it must come via the KYESTU_API_SECRET env (use
-# `secret: env:KYESTU_API_SECRET` in the config) so this check can present
-# the same Bearer token. A 200 only proves the control plane serves — failed
+# Liveness: /api/status. The control plane refuses to start without a secret
+# (fail-closed), so a non-empty KYESTU_API_SECRET is mandatory in practice and
+# this check presents it as the Bearer token (config: `secret:
+# env:KYESTU_API_SECRET`). Local dev can opt out with allow_insecure: true /
+# KYESTU_API_INSECURE=1. A 200 only proves the control plane serves — failed
 # fibers still return 200; alert on the payload's state/taints externally.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS -o /dev/null -H "Authorization: Bearer ${KYESTU_API_SECRET:-}" \

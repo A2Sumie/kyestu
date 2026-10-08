@@ -1,7 +1,7 @@
 import type { Article, FontConfig } from '../types'
 import { getIconCode, loadEmoji, type apis } from './utils/twemoji'
 import { FontDetector, languageFontMap } from './utils/font'
-import { articleParser, CARD_WIDTH } from '../../template/img/DefaultCard'
+import { articleParser, CARD_WIDTH, MAX_CARD_HEIGHT } from '../../template/img/DefaultCard'
 import { TemplateRegistry } from '../registry'
 import satori, { type Font } from 'satori'
 import tailwindConfig from '../../template/img/DefaultTailwindConfig'
@@ -490,6 +490,13 @@ class ImgConverter {
         const templateName = typeof template === 'string' ? template : template?.templateName
         const parser = TemplateRegistry.getInstance().getOrDefault(templateName)
         const { height, component: Card } = parser(article, typeof template === 'string' ? undefined : template)
+        // canvas policy (daybreak 2026-10-08 finding 2): template parsers see
+        // untrusted article content, so the raster budget is enforced here for
+        // every template, not only the default card. Out-of-policy heights
+        // throw; the formatter's renderCard catches and falls back to text.
+        if (!Number.isFinite(height) || height <= 0 || height > MAX_CARD_HEIGHT) {
+            throw new Error(`card height out of policy: ${String(height)} (max ${MAX_CARD_HEIGHT})`)
+        }
         const fontsOptions: Font[] = this.getFontOptions()
         const svg = await satori(Card, {
             width: CARD_WIDTH,

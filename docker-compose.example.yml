@@ -14,8 +14,9 @@ services:
     environment:
       ONEBOT_HTTP_URL: ${ONEBOT_HTTP_URL:?set ONEBOT_HTTP_URL in .env}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      # 控制面鉴权：必须与配置里 api 的 secret 同源，HEALTHCHECK 才能通过
-      KYESTU_API_SECRET: ${KYESTU_API_SECRET:-}
+      # 控制面鉴权：必须与配置里 api 的 secret 同源，HEALTHCHECK 才能通过。
+      # 留空时服务拒绝启动（api 组件 fail-closed），开发用免鉴权请显式 allow_insecure: true
+      KYESTU_API_SECRET: ${KYESTU_API_SECRET:?set KYESTU_API_SECRET in .env}
       DATABASE_PATH: /app/data/data.db
       CACHE_DIR: /app/data/cache
       # 如需跨容器重建保留 DB 恢复 marker，指到卷内：

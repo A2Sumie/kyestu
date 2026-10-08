@@ -55,11 +55,23 @@ export interface ApiControl {
   onCookieHealth?: () => unknown
 }
 
-export const apiComponent: Component<{ port?: number; secret?: string } & ApiControl> = {
-  knownWithKeys: ['port', 'secret', 'onStatus', 'onReload', 'onCookieHealth'],
+export const apiComponent: Component<{ port?: number; secret?: string; allow_insecure?: boolean } & ApiControl> = {
+  knownWithKeys: ['port', 'secret', 'allow_insecure', 'onStatus', 'onReload', 'onCookieHealth'],
   apply: (ctx, config) => {
     const port = config.port ?? 3000
-    const secret = config.secret
+    const secret = typeof config.secret === 'string' ? config.secret.trim() : ''
+    // fail closed: an unauthenticated control plane is an opt-in, never a
+    // default. An empty/absent secret would otherwise silently skip the only
+    // route guard and expose /api/status, /api/cookie-health and the
+    // state-changing POST /api/reload?force=1 to anyone who can reach the port
+    // (daybreak 2026-10-08 finding 3).
+    const allowInsecure = config.allow_insecure === true || process.env.KYESTU_API_INSECURE === '1'
+    if (!secret && !allowInsecure) {
+      throw new Error(
+        'api.secret is empty: refusing to start an unauthenticated control plane. ' +
+          'Set `secret` (e.g. `secret: env:KYESTU_API_SECRET`) or explicitly opt in with `allow_insecure: true` (dev only).',
+      )
+    }
     const server = Bun.serve({
       port,
       async fetch(req) {

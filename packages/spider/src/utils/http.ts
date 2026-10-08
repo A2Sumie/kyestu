@@ -40,12 +40,38 @@ interface DownloadWebpageOptions {
     throwOnError?: boolean
 }
 
+/**
+ * Validate a caller-supplied URL before it reaches a network sink. Two shapes
+ * of abuse are rejected up front (daybreak 2026-10-08 finding 8):
+ * - a leading-hyphen string (`--url=file:///etc/passwd`) is a curl *option*,
+ *   not a positional URL — argv-based execFile does not protect against that;
+ * - non http(s) schemes (file:, ftp:, data:) are out of scope for these
+ *   transports and can read local or non-HTTP resources.
+ * Throw regardless of `throwOnError`: that flag only relaxes HTTP *status*
+ * handling, it must never turn a malformed URL into a silent success.
+ */
+function assertHttpUrl(url: string): URL {
+    let parsed: URL | null = null
+    if (typeof url === 'string' && url.length > 0 && !url.startsWith('-')) {
+        try {
+            parsed = new URL(url)
+        } catch {
+            parsed = null
+        }
+    }
+    if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+        throw new Error(`refusing non-http(s) url: ${String(url).slice(0, 160)}`)
+    }
+    return parsed
+}
+
 namespace HTTPClient {
     export async function download_webpage(
         url: string,
         headers: Record<string, string> = {},
         options: DownloadWebpageOptions = {},
     ): Promise<Response> {
+        assertHttpUrl(url)
         const timeout = Math.max(1, options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS)
         const throwOnError = options.throwOnError ?? true
         const controller = new AbortController()
@@ -78,7 +104,33 @@ namespace HTTPClient {
      * GET via the system curl binary. Some platforms (Instagram, TikTok) fingerprint and 429 the
      * TLS/HTTP2 stack of runtime fetch implementations while leaving curl-like clients alone; use
      * this transport for those endpoints.
+     *
+     * argv is built by buildCurlArgs: the url is validated and appended after `--`, and the
+     * protocol set is pinned to http(s) for the request and its redirects.
      */
+    export function buildCurlArgs(url: string, headers: Record<string, string>, timeoutMs: number): string[] {
+        assertHttpUrl(url)
+        const args = [
+            '-sS',
+            '-L',
+            '--proto',
+            '=http,https',
+            '--proto-redir',
+            '=http,https',
+            '--max-time',
+            String(Math.ceil(timeoutMs / 1000)),
+            '-o',
+            '-',
+            '-w',
+            '\n%{http_code}',
+        ]
+        for (const [name, value] of Object.entries(headers)) {
+            args.push('-H', `${name}: ${value}`)
+        }
+        args.push('--', url)
+        return args
+    }
+
     export async function download_webpage_curl(
         url: string,
         headers: Record<string, string> = {},
@@ -86,11 +138,7 @@ namespace HTTPClient {
     ): Promise<Response> {
         const timeout = Math.max(1, options.timeout ?? DEFAULT_FETCH_TIMEOUT_MS)
         const throwOnError = options.throwOnError ?? true
-        const args = ['-sS', '-L', '--max-time', String(Math.ceil(timeout / 1000)), '-o', '-', '-w', '\n%{http_code}']
-        for (const [name, value] of Object.entries(headers)) {
-            args.push('-H', `${name}: ${value}`)
-        }
-        args.push(url)
+        const args = buildCurlArgs(url, headers, timeout)
         let stdout: string
         try {
             const { execFile } = await import('child_process')

@@ -33,6 +33,24 @@ const CARD_LINE_HEIGHT = {
     tightBase: '20px',
 }
 const CARD_TEXT_IGNORABLE_PATTERN = /[\uFE0E\u200B\u200C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
+/**
+ * Per-block text budget (daybreak 2026-10-08 finding 2): remote article text
+ * is untrusted and unbounded, and every character is walked by the layout
+ * estimator AND rasterized. Capping at the sanitize chokepoint keeps the
+ * estimated height and the rendered content consistent — every card text path
+ * goes through sanitizeCardText. Text-only delivery (articleToText) is not
+ * capped; the card is the limited medium.
+ */
+export const CARD_TEXT_MAX_CHARS = 2000
+export const CARD_TEXT_TRUNCATION_MARKER = '\n…（以下省略）'
+/**
+ * Hard ceiling on the rasterized canvas (6x the card width). Website/LEAP
+ * bodies control the estimated height (block count, media rows), so beyond the
+ * per-block text cap the height itself must be bounded: the card clips at the
+ * ceiling (BaseCard is overflow-hidden) and articleToImg refuses taller
+ * canvases outright.
+ */
+export const MAX_CARD_HEIGHT = CARD_WIDTH * 6
 export const CARD_FONT_FAMILY = [
     'Noto Sans',
     'Noto Sans CJK JP',
@@ -78,7 +96,15 @@ export const CARD_FONT_FAMILY = [
 ].join(', ')
 
 export function sanitizeCardText(value: string | null | undefined) {
-    return (value || '').replace(/\u2764\uFE0E+/g, '\u2764\uFE0F').replace(CARD_TEXT_IGNORABLE_PATTERN, '')
+    const clean = (value || '').replace(/\u2764\uFE0E+/g, '\u2764\uFE0F').replace(CARD_TEXT_IGNORABLE_PATTERN, '')
+    // idempotent: the truncated result is exactly CARD_TEXT_MAX_CHARS, so a
+    // second pass (nested article layers re-sanitize) neither re-cuts nor
+    // stacks the marker
+    if (clean.length <= CARD_TEXT_MAX_CHARS) return clean
+    // never cut a surrogate pair in half: a trailing lone surrogate would
+    // poison the SVG text node
+    const cut = clean.slice(0, CARD_TEXT_MAX_CHARS - CARD_TEXT_TRUNCATION_MARKER.length).replace(/[\uD800-\uDBFF]$/, '')
+    return `${cut}${CARD_TEXT_TRUNCATION_MARKER}`
 }
 export const CARD_TRANSLATION_FONT_FAMILY = [
     'Noto Sans',
@@ -1670,7 +1696,10 @@ function articleParser(
     if (estimatedHeight / CARD_WIDTH < minimumCardRatio) {
         paddingHeight = CARD_WIDTH * minimumCardRatio - estimatedHeight
     }
-    const cardHeight = Math.ceil(estimatedHeight + paddingHeight)
+    // hard ceiling: remote content controls the block/media count, and a card
+    // is a fixed medium — clamp and let the overflow-hidden card clip instead
+    // of rasterizing an attacker-sized canvas
+    const cardHeight = Math.min(Math.ceil(estimatedHeight + paddingHeight), MAX_CARD_HEIGHT)
     return {
         component: (
             <BaseCard article={article} paddingHeight={paddingHeight} features={features} cardHeight={cardHeight} />

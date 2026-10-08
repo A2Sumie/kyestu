@@ -2,14 +2,18 @@ import { expect, test } from 'bun:test'
 import { Platform } from '@kyestu/spider/types'
 import {
     CARD_FONT_FAMILY,
+    CARD_TEXT_MAX_CHARS,
+    CARD_TEXT_TRUNCATION_MARKER,
     CARD_TRANSLATION_FONT_FAMILY,
     CARD_UI_FONT_FAMILY,
+    MAX_CARD_HEIGHT,
     articleParser,
     estimateTextLinesHeight,
     layoutMediaRows,
     resolve227WebsiteBrandKey,
     sanitizeCardText,
 } from '../template/img/DefaultCard'
+import { TemplateRegistry } from '../src/registry'
 import { languageFontMap } from '../src/img/utils/font'
 import { getIconCode } from '../src/img/utils/twemoji'
 import { ImgConverter, isSupportedOpenTypeFont, loadDynamicAsset, resolveSatoriFontLang } from '../src/img'
@@ -806,4 +810,60 @@ test('dynamic asset loader can run in deterministic no-remote mode', async () =>
         }
         globalThis.fetch = previousFetch
     }
+})
+
+// ---------- card resource policy (daybreak 2026-10-08 finding 2) ----------
+
+test('sanitizeCardText caps hostile-length text at CARD_TEXT_MAX_CHARS, idempotently', () => {
+    const long = 'あ'.repeat(CARD_TEXT_MAX_CHARS + 5000)
+    const once = sanitizeCardText(long)
+
+    expect(once.length).toBe(CARD_TEXT_MAX_CHARS)
+    expect(once.endsWith(CARD_TEXT_TRUNCATION_MARKER)).toBeTrue()
+    // nested layers re-sanitize the same string: no double cut, no stacked marker
+    expect(sanitizeCardText(once)).toBe(once)
+    expect(sanitizeCardText('short')).toBe('short')
+})
+
+test('sanitizeCardText never cuts a surrogate pair in half', () => {
+    const once = sanitizeCardText('😀'.repeat(CARD_TEXT_MAX_CHARS))
+
+    expect(once.length).toBeLessThanOrEqual(CARD_TEXT_MAX_CHARS)
+    expect(once.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '')).not.toMatch(/[\uD800-\uDFFF]/)
+})
+
+test('articleParser clamps hostile article bodies to MAX_CARD_HEIGHT', () => {
+    const article = {
+        id: -1,
+        platform: Platform.X,
+        a_id: 'hostile-height-test',
+        u_id: 'u',
+        username: 'u',
+        created_at: 1710000000,
+        content: '本文の行だよ\n'.repeat(30000),
+        translation: '这是翻译行\n'.repeat(30000),
+        translated_by: null,
+        url: '',
+        type: 'normal',
+        ref: null,
+        has_media: true,
+        media: Array.from({ length: 60 }, () => ({ type: 'photo', url: 'https://x/y.jpg', width: 1200, height: 1600 })),
+        extra: null,
+        u_avatar: null,
+    }
+
+    const { height } = articleParser(article as any)
+
+    expect(height).toBe(MAX_CARD_HEIGHT)
+})
+
+test('articleToImg refuses canvases taller than MAX_CARD_HEIGHT for any template', async () => {
+    TemplateRegistry.getInstance().register('hostile-height-template', () => ({
+        component: { type: 'div', props: {} } as any,
+        height: MAX_CARD_HEIGHT + 1,
+    }))
+
+    await expect(new ImgConverter().articleToImg({} as any, 'hostile-height-template')).rejects.toThrow(
+        'card height out of policy',
+    )
 })
