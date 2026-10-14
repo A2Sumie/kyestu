@@ -225,6 +225,40 @@ export function classifyOneBotError(error: unknown): TransportFailure {
   }
 }
 
+/** Socket-level codes where the request provably never reached the bridge. */
+const NEVER_DELIVERED_CODE_PATTERN = /^(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|EACCES)$/
+
+/**
+ * Could the bridge have received and delivered this message even though the
+ * caller saw a failure? Only *response-less* transport failures are ambiguous
+ * (timeout / mid-flight reset — SnowLuma acks sends only after delivery, so a
+ * client timeout routinely accompanies a delivered message; 2026-10-15
+ * duplicate-send incident). A failure the bridge actually answered (any HTTP
+ * status) carries an explicit verdict ("the action ran and failed"), and
+ * connection-establishment failures provably never sent anything — those may
+ * be retried blindly. Ambiguous failures must be reconciled against the
+ * bridge (`get_*_msg_history`) before any re-send.
+ */
+export function isPossiblyDeliveredTransportError(error: unknown): boolean {
+  const candidate = (error || {}) as { code?: unknown; httpStatus?: unknown; message?: unknown }
+  const code = String(candidate.code || '')
+  const message = error instanceof Error ? error.message : String(error)
+  const httpStatus = Number(candidate.httpStatus)
+
+  if (Number.isFinite(httpStatus) && httpStatus > 0) {
+    return false
+  }
+  if (NEVER_DELIVERED_CODE_PATTERN.test(code)) {
+    return false
+  }
+  if (/HTTP [45]\d\d/.test(message)) {
+    return false
+  }
+  // Timeout (AbortSignal.timeout), mid-flight resets and anything
+  // unrecognized: the request bytes may well have been processed.
+  return true
+}
+
 // ── dialect detection ───────────────────────────────────────────────────────
 
 /** detect the bridge dialect from a `get_version_info` payload */

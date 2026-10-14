@@ -5,9 +5,11 @@ import {
   classifyOneBotError,
   classifyOneBotResponse,
   detectDialect,
+  isPossiblyDeliveredTransportError,
   type OneBotDialect,
   type OneBotVerdict,
 } from '../pipeline/onebot-semantics'
+import { buildSendTextSignature, findDeliveredMessageId } from '../pipeline/onebot-send-reconcile'
 
 /**
  * OneBot v11 HTTP client, dual-dialect: NapCat (legacy) and SnowLuma.
@@ -81,16 +83,27 @@ export interface OneBotClientConfig {
   dialect?: 'auto' | OneBotDialect
   /** `upload_file_stream` chunk payload cap (raw bytes per request) */
   upload_chunk_bytes?: number
+  /**
+   * Delays (ms) between bridge-history checks after an ambiguously failed
+   * send. Tests shrink this; production keeps the schedule that outlives the
+   * observed bridge delivery latency (~38s, 2026-10-15 incident).
+   */
+  reconcile_delays_ms?: number[]
 }
 
-const DEFAULT_TIMEOUT_MS = 15_000
+const DEFAULT_TIMEOUT_MS = 60_000
 const DEFAULT_UPLOAD_CHUNK_BYTES = 512 * 1024
+const DEFAULT_RECONCILE_DELAYS_MS = [3_000, 12_000, 20_000]
+/** Match window for the bridge history copy: request start minus this slack. */
+const RECONCILE_MATCH_SLACK_MS = 20_000
 
 export class OneBotClient {
   private readonly url: string
   private readonly token?: string
   private readonly timeoutMs: number
   private readonly uploadChunkBytes: number
+  private readonly reconcileDelaysMs: number[]
+  private readonly reconciledMessageIds = new Set<string>()
   private forcedDialect: OneBotDialect | null
   private cachedCapabilities: OneBotCapabilities | null = null
 
@@ -99,6 +112,10 @@ export class OneBotClient {
     this.token = config.access_token
     this.timeoutMs = config.timeout_ms ?? DEFAULT_TIMEOUT_MS
     this.uploadChunkBytes = config.upload_chunk_bytes ?? DEFAULT_UPLOAD_CHUNK_BYTES
+    this.reconcileDelaysMs =
+      Array.isArray(config.reconcile_delays_ms) && config.reconcile_delays_ms.length > 0
+        ? config.reconcile_delays_ms
+        : DEFAULT_RECONCILE_DELAYS_MS
     this.forcedDialect = config.dialect && config.dialect !== 'auto' ? config.dialect : null
     if (this.forcedDialect) {
       this.cachedCapabilities = capabilitiesFor(this.forcedDialect)
@@ -106,11 +123,11 @@ export class OneBotClient {
   }
 
   async sendPrivateMsg(userId: number | string, message: OneBotMessageSegment[] | string) {
-    return this.call('send_private_msg', { user_id: userId, message })
+    return this.sendGuarded('send_private_msg', { user_id: userId, message }, message)
   }
 
   async sendGroupMsg(groupId: number | string, message: OneBotMessageSegment[] | string) {
-    return this.call('send_group_msg', { group_id: groupId, message })
+    return this.sendGuarded('send_group_msg', { group_id: groupId, message }, message)
   }
 
   async sendPrivateForwardMsg(userId: number | string, nodes: OneBotMessageSegment[]) {
@@ -246,6 +263,79 @@ export class OneBotClient {
     }
     this.cachedCapabilities = capabilitiesFor(dialect)
     return this.cachedCapabilities
+  }
+
+  /**
+   * Send with the 2026-10-15 duplicate-send guard: an ambiguously failed send
+   * (timeout / mid-flight reset — the bridge may already have delivered it)
+   * is reconciled against the bridge's message history before any re-send.
+   *
+   *  - delivered copy found   -> report success with the bridge-side message_id;
+   *  - proven absent          -> rethrow the original failure so the router's
+   *    bounded redrive may re-send (every redrive passes this gate again);
+   *  - history unreachable / payload without text -> terminal
+   *    non-redrivable failure: never re-send on doubt.
+   */
+  private async sendGuarded(
+    action: string,
+    payload: Record<string, unknown>,
+    message: OneBotMessageSegment[] | string,
+  ): Promise<any> {
+    const requestStartedAt = Date.now()
+    try {
+      return await this.call(action, payload)
+    } catch (error) {
+      const verdict = classifyOneBotError(error)
+      if (!verdict.retryable || !isPossiblyDeliveredTransportError(error)) throw error
+      return await this.reconcileAmbiguousSend(error, action, payload, message, requestStartedAt)
+    }
+  }
+
+  private async reconcileAmbiguousSend(
+    error: unknown,
+    action: string,
+    payload: Record<string, unknown>,
+    message: OneBotMessageSegment[] | string,
+    requestStartedAt: number,
+  ): Promise<any> {
+    const segments: OneBotMessageSegment[] =
+      typeof message === 'string' ? [{ type: 'text', data: { text: message } }] : message
+    const signature = buildSendTextSignature(segments)
+    const detail = error instanceof Error ? error.message : String(error)
+    if (!signature) {
+      throw new OneBotNonRetryableError(
+        `ambiguous ${action} failure; refusing blind resend of a payload without text signature: ${detail}`,
+        { ok: false, kind: 'unknown', failureClass: 'other', retryable: false, redrivable: false, retcode: null, status: null, wording: `ambiguous ${action} without text signature`, dialectHint: null },
+      )
+    }
+    const historyAction = action === 'send_private_msg' ? 'get_friend_msg_history' : 'get_group_msg_history'
+    const historyPayload =
+      action === 'send_private_msg'
+        ? { user_id: payload.user_id, count: 20 }
+        : { group_id: payload.group_id, count: 20 }
+    const sinceEpochSec = Math.floor((requestStartedAt - RECONCILE_MATCH_SLACK_MS) / 1000)
+    for (let attempt = 0; attempt <= this.reconcileDelaysMs.length; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.reconcileDelaysMs[attempt - 1]))
+      }
+      let history: unknown
+      try {
+        history = await this.call(historyAction, historyPayload)
+      } catch (reconcileError) {
+        const message2 = reconcileError instanceof Error ? reconcileError.message : String(reconcileError)
+        throw new OneBotNonRetryableError(
+          `ambiguous ${action} failure; history reconcile failed (${message2}); refusing blind resend: ${detail}`,
+          { ok: false, kind: 'unknown', failureClass: 'other', retryable: false, redrivable: false, retcode: null, status: null, wording: `ambiguous ${action}; history reconcile failed`, dialectHint: null },
+        )
+      }
+      const list = Array.isArray(history) ? history : Array.isArray((history as any)?.messages) ? (history as any).messages : []
+      const adoptedId = findDeliveredMessageId(list, { signature, sinceEpochSec, takenMessageIds: this.reconciledMessageIds })
+      if (adoptedId) {
+        this.reconciledMessageIds.add(adoptedId)
+        return { message_id: adoptedId, reconciled: true }
+      }
+    }
+    throw error
   }
 
   private async call(action: string, payload: Record<string, unknown>): Promise<any> {
