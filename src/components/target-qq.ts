@@ -108,7 +108,12 @@ export const qqTargetComponent: Component<Record<string, any>> = {
           let lastError: unknown
           for (let attempt = 0; attempt < SEND_ATTEMPTS_PER_CHUNK; attempt++) {
             try {
-              const res: any = await client.sendGroupMsg(groupId, chunk)
+              // destination override (inbound reactions reply into the event's
+              // scope); default stays the configured group_id
+              const dest = input.dest ?? { kind: 'group' as const, id: groupId }
+              const res: any = await (dest.kind === 'private'
+                ? client.sendPrivateMsg(dest.id, chunk)
+                : client.sendGroupMsg(dest.id, chunk))
               const messageId = res?.message_id ?? (Array.isArray(res) ? res[0]?.message_id : undefined)
               if (messageId !== undefined && messageId !== null) messageIds.push(messageId)
               lastError = null
@@ -173,6 +178,16 @@ export const qqTargetComponent: Component<Record<string, any>> = {
         return results
       },
       health: () => health.snapshotOf(),
+      noteBridgeEvent: (kind: 'offline' | 'online', detail?: string) => {
+        // inbound signal (SnowLuma bot_offline notice / account notifications):
+        // an offline bot means "defer sends", the same verdict the health board
+        // derives from a failing bridge; `online` closes the circuit early
+        if (kind === 'offline') {
+          health.recordFailure('internal', 'temporary', detail ?? 'bot offline (inbound event)')
+        } else {
+          health.recordSuccess()
+        }
+      },
     } satisfies QqTargetApi)
   },
 }
@@ -185,6 +200,9 @@ async function buildSegments(
   text: string,
 ): Promise<OneBotMessageSegment[]> {
   const segments: OneBotMessageSegment[] = []
+  // quote-reply anchor first: SnowLuma attaches the cached original text as a
+  // QQ quote preview; NapCat renders the bare quote
+  if (input.reply !== undefined) segments.push({ type: 'reply', data: { message_id: input.reply.message_id } })
   if (text) segments.push({ type: 'text', data: { text } })
   const capabilities = await client.capabilities()
   for (const media of input.rendered.media) {

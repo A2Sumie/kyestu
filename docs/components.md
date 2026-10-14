@@ -63,7 +63,16 @@ export const myProcessorComponent: Component<MyConfig> = {
 
 幂等与去重不要自己另写：`OutboundStore.claim/mark/markForwarded`（pipeline/outbound.ts）+ `forward_by` 是既有兜底。claim 判定四态：`sent`（终态幂等）、`exhausted`（5 次预算耗尽、永不重投）、`in_progress`（他人持有 claim，抛 `OneBotRetryLaterError` 稍后重试）、`null`（本次持有、必须发送）；`partial`（部分 chunk 已可见）也是终态，禁止整条重投。
 
-`target/qq` 的 `with` 键面：`group_id`、`min_interval`、`onebot`（多 UIN 时指向 `infra/onebot` 条目 id）、`media`（媒体来源策略，见 docs/snowluma.md §2/§8）、`health`（熔断参数）+ `TARGET_RUNTIME_KNOWN_WITH_KEYS`；契约是 `QqTargetApi`（types/api.ts：`send` + SnowLuma 运维 ops `recall`/`verifyReceipts`/`health`）。
+`target/qq` 的 `with` 键面：`group_id`、`min_interval`、`onebot`（多 UIN 时指向 `infra/onebot` 条目 id）、`media`（媒体来源策略，见 docs/snowluma.md §2/§8）、`health`（熔断参数）+ `TARGET_RUNTIME_KNOWN_WITH_KEYS`；契约是 `QqTargetApi`（types/api.ts：`send` + SnowLuma 运维 ops `recall`/`verifyReceipts`/`health`/`noteBridgeEvent`）。`SendInput` 另有两个可选字段服务**入站反应**（types/api.ts）：`dest: { kind: 'group'|'private', id }`（目的地覆盖——反应发到事件所在群/好友，缺省仍是目标的 `group_id`）与 `reply: { message_id }`（引用段，SnowLuma 自动附原文引用）。
+
+### 入站事件源与反应积木（app/qq-ingress）
+
+入站侧的组件形态（语义规范 docs/snowluma.md §9）：
+
+1. **事件源**：`app/qq-ingress` 自持 webhook 端点（`Bun.serve`，逆= `server.stop`）+ `ctx.effect` 定时补缺 pass；鉴权 HMAC `X-Signature`/Bearer 双兼容，secret 缺失拒启（与 app/api 同一 fail-closed 纪律）。归一化/鉴权/规则匹配是纯函数（`pipeline/qq-events.ts`、`pipeline/qq-reactions.ts`），组件只做 I/O 与生命周期。
+2. **服务面选择**：归一化事件经 **bus `qq` 频道**广播（载荷=事件本体+账本键），反应规则在组件内直调执行（quick operation 需要同步回 HTTP 响应体，走 bus 异步订阅拿不到）；外部订阅者（审计/OCR）可另挂 bus。
+3. **跨 fiber 解析**：动作对 target 的调用经 `node:<id>` 句柄**惰性解析**（同 api.ts hooks 模式），不加 needs 边——target 重建不级联进 ingress（J1）。危险内置命令在命令内部强制 admin 白名单（`recall` 范式）。
+4. **持久化**：事件账本 `qq_inbound_events`（dedupe_key 唯一 + 派发日志 `received→dispatching→ok/error/skipped|bad`）走 sqlite；配额按 D20 显式决定为内存态。
 
 ## 4. ctx.set vs expose vs bus：服务面怎么选
 

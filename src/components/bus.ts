@@ -1,4 +1,5 @@
 import type { Component } from '../core/types'
+import type { QqInboundEvent } from '../pipeline/qq-events'
 
 export interface ArticleEvent {
   platform: string
@@ -32,6 +33,7 @@ interface BusEventMap {
   article: ArticleEvent
   live: LiveEvent
   session: SessionBusEvent
+  qq: QqInboundEvent
 }
 
 /** process-wide event bus: crawlers publish, router / live-player subscribe */

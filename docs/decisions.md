@@ -149,3 +149,29 @@ runtime 忠实实现了论文语义，但论文把若干正确性前提显式标
 5. **不引 `@snowluma/sdk`/`@snowluma/mcp`**（内部能力层 + `get_version_info` 方言探测）；quick operation、
    新 notice 事件、notifications webhook 需要入站事件通道，kyestu 只发不收，明确不做（P2 另议）。
 6. 运维显式 API：`/api/qq/recall`、`/api/qq/receipts`、`/api/qq/health` + 签名媒体路由 `/media/<name>?exp&sig`。
+
+## D20：QQ 入站事件通道与反应积木（2026-10-14）
+
+背景：用户澄清"高度支持 SnowLuma"的口径 = **能反向监控 QQ 群内消息并做出反应**。D19-5 的 P2 不做项
+（quick operation / 新 notice / notifications webhook）全部卡在"只发不收"，本条补齐入站通道。
+语义规范：**docs/snowluma.md §9**。要点：
+
+1. **独立 `app/qq-ingress` 组件（自有 HTTP webhook 端点），不挂 `app/api` 控制面**：`app/api` 是
+   daybreak 2026-10-08 fail-closed Bearer 控制面（`tests/api-guard.test.ts` 钉"每路由 Bearer"），
+   把 HMAC 签名的 webhook 路由塞进去会为它开鉴权例外、侵蚀该裁决；独立端点自带 HMAC `X-Signature` +
+   Bearer 双鉴权、secret 缺失拒启，且**默认关闭**（不配条目即无监听）。
+2. **bus 新增 `qq` 频道**（按 bus.md 纪律改 `BusEventMap` 本体）：载荷是归一化事件**本体** + 账本键
+   （QQ 消息无"正文回库重取"的外键语义），兜底语义见 docs/bus.md「qq 段」。
+3. **historySync 补缺 → `recovered` 重放，修订 D19-3 的前提**：D19-3"historySync 不回填 bus"的理由是
+   "无入站消费方、伪造文章会发明数据源语义"。入站通道落地后前提消失，但**形态仍不是回填文章**——
+   补缺的历史消息由 ingress 以 `recovered: true` 入站事件重放进反应链路（`qq_messages` 为事实源、
+   `qq_inbound_events` 为已处理账本），不伪造 platform/a_id/路由。
+4. **反应走既有发送链路**：`SendInput` 增可选 `dest`（事件所在群/好友作为目的地）与 `reply`（引用段），
+   `reply/forward/command` 动作经 `target/qq` 的 `send` 契约发送——健康闸、outbound claim、冷却表、
+   媒体决策全部复用（注意：digest/summary 配置的 target 会把反应消息聚合，告警目标建议用独立 target 条目）。
+5. **可靠性口径**：入站事件至少一次（账本唯一键幂等 + 历史回补）；反应执行至少一次到 claim 幂等为止
+   （键含 rule/action/dest，重放不双发；崩溃中途由 stale `dispatching` 重派发，同 outbound `sending`
+   stale 窗手法）；handler 持续失败 = 终态 `error` 可见**不自动重试**（防失败风暴）。
+6. **显式决定**：配额（每群每规则 cooldown/limit）为**内存态**，fiber 重建/重启即重置——防抖非性计费，
+   不值得 service_state 写放大约束（与 F3 同类问题的显式决定）；quick operation 以 webhook 响应体交付
+   （OneBot 快捷操作契约），每事件首个生效；自身消息/`message_sent` 回显默认不反应（防死循环）。

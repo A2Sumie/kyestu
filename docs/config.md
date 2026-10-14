@@ -67,8 +67,12 @@ routes:
 `infra/onebot`（`http_url`/`access_token`/`timeout_ms`/`dialect: auto|napcat|snowluma|generic`/`upload_chunk_bytes`）、
 `target/qq`（`group_id`/`min_interval`/`onebot`/`media{mode,base_url,root,secret,signed_ttl_s,inline_max_bytes,allow_file_fallback}`/`health{probe_interval_ms,base_cooldown_ms,max_cooldown_ms}`）、
 `app/qq-history-sync`（`group_id|friend_id`/`onebot`/`interval_ms`/`count`/`gap_ms`/`max_pages`）、
+`app/qq-ingress`（**默认关闭**，不配即无监听）：`port`/`path`/`secret`（必填，HMAC `X-Signature`+Bearer 双鉴权）/
+`rules`/`admins`/`self_ids`/`include_self_messages`/`default_target`/`health_target`/
+`recover{enabled,history_sync,interval_ms,max_age_ms,max_events,stale_dispatch_ms}`——
+规则 schema 与反应积木见 **docs/snowluma.md §9**，样例 `examples/qq-ingress.example.yaml`；
 `app/router` 新增 `max_send_attempts`/`send_backoff_ms`、`app/api` 新增 `qq_target`/`media{root,secret}`。
-语义（retcode 判读表、媒体决策表、historySync、熔断）见 **docs/snowluma.md**；配置示例见其 §8。
+语义（retcode 判读表、媒体决策表、historySync、熔断、入站事件与反应）见 **docs/snowluma.md**；配置示例见其 §8/§9。
 
 ## 从 idol-bbq 导入
 

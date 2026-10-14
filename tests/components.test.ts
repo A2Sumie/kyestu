@@ -14,12 +14,12 @@ import { defineInfra, defineAll } from '../src/components'
 test('db: migrations apply once and produce the production schema', () => {
   const db = new KyestuDb(':memory:')
   const applied = db.migrate(defaultMigrationsDir)
-  expect(applied.length).toBe(10)
+  expect(applied.length).toBe(11)
   expect(db.migrate(defaultMigrationsDir)).toEqual([])
   const tables = (db.db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>).map(
     (r) => r.name,
   )
-  for (const table of ['task_queue', 'outbound_messages', 'media_hashes', 'video_pairings', 'service_state', 'target_health', 'qq_messages']) {
+  for (const table of ['task_queue', 'outbound_messages', 'media_hashes', 'video_pairings', 'service_state', 'target_health', 'qq_messages', 'qq_inbound_events']) {
     expect(tables).toContain(table)
   }
   db.close()

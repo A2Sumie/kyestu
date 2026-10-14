@@ -17,6 +17,10 @@
 | 传输与动作面 | `src/components/onebot.ts` | OneBotClient |
 | 发送路径整合 | `src/components/target-qq.ts` | 组件 |
 | 历史补缺 | `src/components/qq-history-sync.ts`（`app/qq-history-sync`） | 可配置组件 |
+| 入站事件归一化 + 鉴权/幂等键 | `src/pipeline/qq-events.ts` | 纯函数（无 I/O） |
+| 反应规则引擎（积木级 action） | `src/pipeline/qq-reactions.ts` | 纯函数 + 注入依赖 |
+| 入站事件账本（去重/派发日志） | `src/pipeline/qq-inbound-store.ts` + `qq_inbound_events` 表 | sqlite |
+| 入站事件源 + 反应执行 | `src/components/qq-ingress.ts`（`app/qq-ingress`） | 可配置组件（**默认关闭**） |
 | 运维面 | `src/components/api.ts`（`/api/qq/*`、`/media/*`） | 显式 API |
 
 **不引 `@snowluma/sdk` / `@snowluma/mcp` 新依赖**（见 §6 决策记录）；能力探测（`get_version_info` →
@@ -109,6 +113,9 @@ dialect）+ 内部能力层承担适配。
   正文在 sqlite）；把 QQ 历史伪造成文章会凭空发明一个数据源语义（platform 表、a_id 语义、路由都不成立）。
   历史行服务**发送侧**去重/回执/审计，不进文章管线。若将来接 QQ 入站（命令/OCR 审核等），应新增独立的
   inbound 组件与频道，而不是把 history 当文章源。
+  > **2026-10-14 修订（D20）**：QQ 入站通道已落地（`app/qq-ingress` + bus `qq` 频道，见 §9），
+  > 上述"不做"的前提（无入站消费方）已消失——但**形态仍不是回填文章**：补缺的历史消息由
+  > ingress 以 `recovered: true` 的入站事件重放进反应链路（§9 补缺口径），不伪造 platform/a_id。
 
 ## 4. 健康/熔断与失败重投（P1）
 
@@ -134,13 +141,13 @@ dialect）+ 内部能力层承担适配。
 | retcode 100/1400/1401/1404/1413/1200 判读 | ✅ | §1；NapCat 200/120 同时兼容 |
 | message_id 落库 / `get_msg` / `delete_msg` | ✅ | §3 + `/api/qq/*` |
 | `get_group_msg_history` 锚点翻页 + historySync 补缺 | ✅ | §3 |
-| `get_status` 健康探测 + `bot_offline` 语义 | ◐ | `get_status` 已接（主动探针）；`bot_offline` notice 属**入站事件**，kyestu 无事件入口 → 用 `get_status` 轮询等价覆盖（见下） |
-| reply 引用预览（reply 段自动附原文） | ◐ | 段构造支持 `reply` 段（`send_group_msg` 直发时可带），但 kyestu 发送的是新文章、无"回复某条消息"场景；撤回纠错（recall+重发）时可用 |
-| quick operation（上报响应 `{reply, at_sender}`） | ❌ | 需要 OneBot **事件入站**（HTTP POST 上报/WS）；kyestu 只发不收，无消费方。将来接入站组件时再做 |
-| 新 notice 事件（emoji_like/input_status/essence/group_card） | ❌ | 同上，无入站事件通道 |
+| `get_status` 健康探测 + `bot_offline` 语义 | ✅ | `get_status` 主动探针 + **入站联动**（§9）：`bot_offline` notice / 账号下线通知 → `qq-health` 熔断（发送闸自动延后），账号上线提前合闸 |
+| reply 引用预览（reply 段自动附原文） | ✅ | 反应 `reply`/`command` 动作带 `reply` 段引用触发消息（`SendInput.reply`），SnowLuma 自动附原文引用；发送链路复用（§9） |
+| quick operation（上报响应 `{reply, at_sender}`） | ✅ | webhook 响应体即快捷操作（`quick_operation` action，§9）；仅 HTTP 上报通道（WS 通道未接） |
+| 新 notice 事件（emoji_like/input_status/essence/group_card） | ✅ | 全部归一化入通道（§9 事件清单）；`bot_offline`/`essence` 已接健康/告警，其余可按规则挂动作 |
 | `ocr_image` / `fetch_ptt_text` 内容理解 | ◐ | `OneBotClient` 未接（processor 契约是 text→text，媒体理解需新契约）；按 P2 择要不做，理由：改动面在 processor/媒体管线契约，收益待真实需求 |
-| 多 UIN 路由 | ✅ | 多个 `infra/onebot`（首个占 `onebot` 共享键，其余经 node handle）+ `target/qq.onebot: <entry id>` 定向 |
-| notifications webhook（账号上下线） | ❌ | 桥侧配置（`config/notifications.json`），且 kyestu 无入站；`get_status` 轮询已覆盖可用性告警 |
+| 多 UIN 路由 | ✅ | 多个 `infra/onebot`（首个占 `onebot` 共享键，其余经 node handle）+ `target/qq.onebot: <entry id>` 定向；入站事件带 `self_id` 归属标注，动作经 `target` 指向对应 UIN 的 target |
+| notifications webhook（账号上下线） | ◐ | 桥侧模板化 body（`config/notifications.json`）；最小 JSON 形态 `{uin, event: online\|offline}` 可直接投递入站端点（Bearer 头可配在 channel `headers`），解析为 `notification` 事件并联动健康/告警；模板需自配 |
 | `@snowluma/sdk` / `@snowluma/mcp` | ❌ | 见 §6 |
 | markdown 段 / 富文本卡 | ❌ | 现状图片卡路径保留（可回滚），P1-6 另议 |
 
@@ -213,3 +220,139 @@ components:
       qq_target: qq-1          # /api/qq/* 的目标（默认第一个 target/qq）
       media: { root: cache/media/store, secret: env:KYESTU_API_SECRET }
 ```
+
+## 9. 入站事件与反应（2026-10-14 D20）
+
+> 口径：SnowLuma「高度支持」= **能反向监控 QQ 群内消息并做出反应**。本节即该能力的落地：
+> 事件源 `app/qq-ingress`（webhook）+ 反应积木（`reply`/`forward`/`command`/`quick_operation`）。
+> **默认关闭**：不配 `app/qq-ingress` 条目即无监听端口、行为与改造前逐字节一致。
+
+### 9.1 通道与事件清单
+
+SnowLuma `httpClients` / NapCat `httpPost`（OneBot v11 HTTP 上报）→ `POST <port><path>`
+（默认 `3200` `/qq/events`）→ 鉴权 → 归一化（`pipeline/qq-events.ts`）→ 幂等账本
+（`qq_inbound_events`）→ 镜像 `qq_messages` → bus `qq` 频道 → 反应规则。
+
+| 事件 | kind | 双方言差异 | 归一化字段 |
+|---|---|---|---|
+| 群/私聊消息 | `message` | `message` 字段段数组（SnowLuma/array）或 CQ 串（NapCat/string）都解析 | scope(`group`/`friend`)、groupId、userId、senderName/Role、messageId、text、mentions(@)、selfId、time、raw |
+| 自身消息回显 | `message_sent` | 需桥侧 `reportSelfMessage:true` | 同上；默认**不反应**（防死循环） |
+| notice | `notice` | NapCat 经典面（`group_increase/decrease/ban/admin/recall/notify(poke,…)/group_upload/friend_add`）+ SnowLuma 新增 `bot_offline`、`essence(add/delete)`、`group_card`、`notify/input_status`、`group_msg_emoji_like(add/remove)` | noticeType/noticeSubType、groupId/userId/messageId |
+| 请求 | `request` | `friend`/`group`（quick operation 可 `approve`） | requestType、text(comment)、flag（raw） |
+| 心跳/生命周期 | `meta_event` | `heartbeat`/`lifecycle` | metaEventType |
+| 账号上下线通知 | `notification` | 桥侧 notifications webhook（模板化 body）；最小 JSON 形态 `{uin, event: online\|offline}` | noticeType=`account`、noticeSubType=online/offline |
+
+多 UIN：事件 `self_id`（webhook 头 `X-Self-ID` 同值）即归属 UIN，规则可用 `match.self_ids` 过滤、
+动作用 `target` 指向该 UIN 的 `target/qq`（`target/qq.onebot` 多 UIN 定向不变）。
+
+### 9.2 鉴权（fail-closed）
+
+- `secret` 必填（缺失拒启，与 `app/api` 同一 fail-closed 纪律）；双兼容两选一：
+  1. **HMAC** `X-Signature: sha1=<hmac-sha1-hex(secret, 原始 body)>`（SnowLuma/NapCat httpClients 原生签名，
+     secret = 该适配器 `accessToken`）——常数时间比较，篡改/错钥即 401；
+  2. **Bearer** `Authorization: Bearer <secret>`（NapCat `accessToken` 头语义 / notifications channel 可配 headers）。
+- `GET <path>` 返回统计（`received/duplicates/skipped/bad/recovered/reactions/actionErrors/ledger`），仅 Bearer。
+
+### 9.3 幂等与坏事件
+
+- 账本表 `qq_inbound_events`（`dedupe_key` 唯一）：消息事件键 = `msg:<scope>:<message_id>`（scope 同
+  `qq_messages` 格式 `group:<id>`/`friend:<id>`），其余 = `evt:<raw 哈希>`。**webhook 重发/补发重放
+  命中唯一键即返回、零反应**——这是"防 webhook 重发重复反应"的唯一事实源。
+- 坏事件（非 JSON / 无法识别的负载）记 `bad` 行 + 返回 400，**跳过不崩**；handler 异常逐动作隔离
+  （记入账本 `detail` + fiber taint），端点永不受影响。
+
+### 9.4 规则 schema（配置驱动，规则可挂多动作）
+
+```yaml
+rules:
+  - id: on-ping
+    match:                       # 全部字段 AND，列表内 OR；不填=通配
+      kinds: [message]           # message|message_sent|notice|request|meta_event|notification|unknown
+      groups: [555]              # 群号
+      users: [10001]             # 发言人
+      self_ids: [234567890]      # 归属 bot UIN
+      text_prefix: '#ping'
+      text_regex: '^#(status|recall)'
+      notice_types: [bot_offline, essence]
+      notice_sub_types: [add]
+      admins_only: false         # true=仅 admins 白名单可触发
+    skip_recovered: false        # true=历史补缺重放的事件不反应
+    cooldown_ms: 30000           # 每（群, 规则）最小间隔
+    limit: { window_ms: 600000, max: 10 }   # 每（群, 规则）窗口配额
+    actions:
+      - type: reply              # 引用回复到事件所在群/好友（走 target 发送链路）
+        text: 'pong {sender}'    # 模板：{text} {user_id} {group_id} {message_id} {sender} {self_id} {kind}
+        quote: true              # 附 reply 段引用原消息（SnowLuma 自动附原文）
+        at_sender: false
+        target: qq-1             # target/qq 条目（默认 default_target）
+      - type: forward            # 命中事件转告警目标
+        to_group: 9999           # 或 to_users: [10001] / to_admins: true
+        prefix: '[alert] '
+        include_text: true
+        target: qq-1
+      - type: command            # 内置命令（status 健康快照 / recall 撤回）
+        name: status             # recall 在命令内部强制 admin 白名单
+        target: qq-1
+      - type: quick_operation    # 直接作为 webhook 响应体（OneBot 快捷操作）
+        reply: 'ack {user_id}'   # {reply, at_sender, auto_escape, delete, ban, ban_duration, kick}
+        at_sender: false         # request 事件支持 {approve, remark, reason}
+```
+
+- **quick operation**：HTTP 上报的响应体即快捷操作（SnowLuma `network/quick-operation.ts` 确认
+  `reply/at_sender/delete/ban/kick` 与 request 的 `approve`）；每事件**首个** `quick_operation` 生效，
+  只对 `message`/`request` 事件规划（notice 无快捷操作面）。
+- **command**：`status`（目标 `health()` 快照）、`recall <message_id>`（撤回；**命令内部强制 admin 白名单**，
+  不依赖规则的 `admins_only`）。
+
+### 9.5 防呆与可靠性（丢谁兜、谁不兜）
+
+| 风险 | 机制 |
+|---|---|
+| 自触发/死循环 | `message_sent` 与 `user_id == self_id`（含已知 `self_ids`）默认跳过（`include_self_messages: true` 可开）；转发再进站依赖桥 `reportSelfMessage`，默认关 |
+| 刷屏 | 每（群,规则）`cooldown_ms` + `limit` 配额（内存态，reload 重置——防抖非性计费，D20 显式决定） |
+| 坏事件 | 记 `bad` 账本行 + 400，跳过 |
+| handler 失败 | 逐动作 try/catch，后续动作照跑；账本记 `error` + detail，fiber 记 taint；**持续失败不自动重试**（防失败风暴），可见性靠账本/统计 |
+| 漏监控（断线窗口） | **historySync 补缺联动**（下节） |
+| 崩溃中途 | 账本 `received`/stale `dispatching`（默认 5min）行下次补缺 pass 重派发；已发动作由 outbound claim（键含 rule/action/dest）幂等去重，不会双发 |
+
+**补缺语义（与 `app/qq-history-sync` 打通）**：`recover: { enabled, history_sync: <entry id>, interval_ms,
+max_age_ms, max_events, stale_dispatch_ms }`——每次 pass 先 `sync()`（最新页+锚点翻页回填 `qq_messages`），
+再取该 scope 内**无账本行**的历史消息（限 `max_age_ms`/`max_events`、跳过 bot 自身消息）以
+`recovered: true` 重放进反应链路；规则可 `skip_recovered: true` 排除（例如不想给补出来的旧消息发引用回复）。
+入站事件本身因此是**至少一次**（ledger + 历史回补）；反应执行至少一次到 **claim 幂等**为止。
+
+### 9.6 加一个新 handler 的步骤
+
+1. `src/pipeline/qq-reactions.ts`：`QqAction*` 类型 + `ACTION_TYPES` 增名 + `dispatchActions` 里加执行分支
+   （保持"逐动作 try/catch 隔离"与 `reactionInput` 的幂等键格式）；若是新内置命令，加进 `COMMANDS` 表
+   （危险命令在命令内部强制 admin 白名单，参照 `recall`）。
+2. `compileRules` 增加该动作的配置校验（坏配置在 apply 期 fail fast，不静默）。
+3. 测试：`tests/qq-events.test.ts`（纯层）+ `tests/qq-ingress.test.ts`（链路）；`testset/cases/96-snowluma.yaml` 登记。
+4. 文档：本节 9.4 schema 与 9.5 防呆表同步。
+
+### 9.7 配置速查（默认关闭）
+
+```yaml
+components:
+  - id: qq-ingress
+    use: app/qq-ingress
+    with:
+      port: 3200                      # webhook 监听端口
+      path: /qq/events
+      secret: env:KYESTU_QQ_WEBHOOK_SECRET   # 必填：HMAC 密钥 = 桥适配器 accessToken（同时是 Bearer）
+      default_target: qq-1            # 动作缺省 target（target/qq 条目）
+      health_target: qq-1             # bot_offline/账号通知联动的健康板（默认同 default_target）
+      admins: [10001]                 # 管理员白名单（admins_only 规则 + recall 命令）
+      self_ids: [234567890]           # 已知 bot UIN（自身消息抑制；运行中自动学习 self_id）
+      include_self_messages: false
+      rules: [ ...见 §9.4... ]
+      recover:                        # historySync 补缺联动（可选）
+        enabled: true
+        history_sync: hist            # app/qq-history-sync 条目 id
+        interval_ms: 300000           # 0=只手动/开机 pass
+        max_age_ms: 3600000
+        max_events: 200
+        stale_dispatch_ms: 300000
+```
+
+完整可抄样例：`examples/qq-ingress.example.yaml`。

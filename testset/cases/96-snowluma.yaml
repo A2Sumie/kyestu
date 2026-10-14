@@ -65,3 +65,67 @@ cases:
     when: recordFailure/gate/runProbe/重建
     then: 冷却表生效并指数升级；1400 类不停 target；get_status 探针可提前合闸；状态跨重建存续
     test: tests/qq-health.test.ts
+  - id: SL-09
+    title: 入站鉴权双兼容：HMAC X-Signature（sha1=hex over 原始 body）/ Bearer，fail-closed
+    layer: send
+    anchor: src/pipeline/qq-events.ts verifyEventSignature、src/components/qq-ingress.ts（docs/snowluma.md §9.2）
+    given: SnowLuma httpClients 签名样本 + 错钥/篡改 body/空 secret 组合
+    when: POST /qq/events
+    then: 正确 HMAC 或 Bearer 通过；错钥/篡改/缺失 401；secret 缺失组件拒启；GET 统计仅 Bearer
+    test: tests/qq-events.test.ts
+  - id: SL-10
+    title: 双方言事件归一化：SnowLuma 段数组 / NapCat CQ 串 + 双方言 notice 事件集
+    layer: unit
+    anchor: src/pipeline/qq-events.ts normalizeQqEvent（docs/snowluma.md §9.1）
+    given: 群/私聊消息（数组与 CQ 串两种 message 形态）、message_sent、bot_offline/essence 等 notice、request、meta_event、账号 notification
+    when: normalizeQqEvent
+    then: 统一为 QqInboundEvent（scope/sender/text/@/message_id/self_id）；CQ 串解码；消息幂等键 msg:<scope>:<message_id>；垃圾负载返回 null
+    test: tests/qq-events.test.ts
+  - id: SL-11
+    title: 幂等账本 + 坏事件防呆：webhook 重发零重复反应，坏负载记录跳过不崩
+    layer: e2e
+    anchor: src/pipeline/qq-inbound-store.ts + src/components/qq-ingress.ts（docs/snowluma.md §9.3）
+    given: 同一事件 body 投递两次；非 JSON / 未知结构负载
+    when: POST /qq/events
+    then: 第二次命中 qq_inbound_events 唯一键直接返回（零反应、duplicates 计数）；坏事件记 bad 行 + 400
+    test: tests/qq-ingress.test.ts
+  - id: SL-12
+    title: 反应积木：reply 引用回复 / forward 转告警 / command（status、recall）/ quick_operation 响应体
+    layer: e2e
+    anchor: src/pipeline/qq-reactions.ts（docs/snowluma.md §9.4）
+    given: 规则命中群消息（SnowLuma 数组与 NapCat CQ 两种方言）
+    when: 动作执行
+    then: reply 走 target 链路且带 reply 段引用 message_id、发到事件所在群（dest 覆盖）；forward 转指定群/管理员；command 经目标 ops；quick_operation 作为 webhook 响应体返回
+    test: tests/qq-ingress.test.ts
+  - id: SL-13
+    title: 规则命中/不命中 + 管理员白名单 + 每群每规则配额
+    layer: unit
+    anchor: src/pipeline/qq-reactions.ts ruleMatches/QqQuotaGate（docs/snowluma.md §9.4）
+    given: kinds/groups/users/prefix/regex/notice 过滤组合、非管理员命令、冷却/窗口配额
+    when: 匹配与配额判定
+    then: 全过滤 AND、列表内 OR；非管理员不触发（recall 命令内部再强制）；冷却与窗口配额按（scope, rule）隔离
+    test: tests/qq-events.test.ts
+  - id: SL-14
+    title: 防自触发/死循环 + handler 失败隔离
+    layer: e2e
+    anchor: src/components/qq-ingress.ts process（docs/snowluma.md §9.5）
+    given: message_sent 回显、user_id==self_id 消息；一个规则的动作序列里首个动作抛错
+    when: 事件处理
+    then: 自身消息/回显默认跳过（skipped 计数、零反应）；失败动作记录后其余动作照跑，账本记 error + detail
+    test: tests/qq-ingress.test.ts
+  - id: SL-15
+    title: bot_offline/essence → qq-health 熔断联动 + 告警转发
+    layer: e2e
+    anchor: src/components/target-qq.ts noteBridgeEvent + src/pipeline/qq-health.ts（docs/snowluma.md §9.1）
+    given: bot_offline notice 与 essence(add) notice 各一条
+    when: 入站处理
+    then: bot_offline → 目标健康板 state=down（发送闸延后）；两者均按规则转发到告警群
+    test: tests/qq-ingress.test.ts
+  - id: SL-16
+    title: historySync 补缺联动：断线窗口消息以 recovered 事件重放，claim 幂等不双发
+    layer: e2e
+    anchor: src/components/qq-ingress.ts recover（docs/snowluma.md §9.5）
+    given: mock 桥历史出现账本未见的消息（含崩溃中途的 received 行）
+    when: recover pass
+    then: 无账本行的历史消息以 recovered:true 重放进反应链路（限 max_age/max_events、跳过 bot 自身）；已见消息不重放；stale dispatching 行重派发且已发动作由 outbound claim 去重
+    test: tests/qq-ingress.test.ts

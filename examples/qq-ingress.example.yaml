@@ -1,0 +1,126 @@
+# QQ 入站事件通道 + 反应积木示例（app/qq-ingress）
+#
+# 默认关闭：不写这个条目 kyestu 就没有监听端口，行为与改造前一致。
+# 语义规范：docs/snowluma.md §9；决策：docs/decisions.md D20。
+#
+# 桥侧（SnowLuma config/onebot.json 的 networks.httpClients，或 NapCat 的 httpPost）指向本端点：
+#   {
+#     "name": "report-kyestu", "enabled": true,
+#     "url": "http://<kyestu 主机>:3200/qq/events",
+#     "accessToken": "<与下面 secret 相同；作为 X-Signature 的 HMAC 密钥>",
+#     "messageFormat": "array", "reportSelfMessage": false
+#   }
+
+components:
+  - id: onebot
+    use: infra/onebot
+    with:
+      http_url: env:ONEBOT_HTTP_URL
+      access_token: env:ONEBOT_TOKEN
+
+  # 出站/反应发送链路（reaction 动作经 target/qq 的 send 契约复用健康闸与 claim）
+  - id: qq-main
+    use: target/qq
+    with:
+      group_id: 123456
+
+  # 告警目标：建议独立 target 条目（digest/summary 配置会把反应消息聚合）
+  - id: qq-alert
+    use: target/qq
+    with:
+      group_id: 999999
+
+  # 历史补缺镜像（入站断线窗口用 get_*_msg_history 回补）
+  - id: hist
+    use: app/qq-history-sync
+    with:
+      group_id: 123456
+      interval_ms: 300000
+
+  # 入站事件源 + 反应（本示例即"默认关闭"的开关：删掉本条目即关闭）
+  - id: qq-ingress
+    use: app/qq-ingress
+    with:
+      port: 3200
+      path: /qq/events
+      secret: env:KYESTU_QQ_WEBHOOK_SECRET   # 必填（缺失拒启）= 桥适配器 accessToken
+      default_target: qq-main                # 动作缺省 target
+      health_target: qq-main                 # bot_offline/账号通知 → qq-health 熔断联动
+      admins: [10001]                        # 管理员 UIN 白名单
+      self_ids: [234567890]                  # 已知 bot UIN（自身消息抑制；运行中自动学习）
+      include_self_messages: false           # 不对自身回显反应（防死循环）
+      rules:
+        # 1) 引用回复（SnowLuma reply 段自动附原文引用）
+        - id: on-ping
+          match:
+            kinds: [message]
+            text_prefix: '#ping'
+          cooldown_ms: 10000                 # 每（群,规则）冷却
+          limit: { window_ms: 600000, max: 20 }
+          actions:
+            - type: reply
+              text: 'pong {sender}'
+              quote: true
+              target: qq-main
+
+        # 2) 管理员命令：#status 健康快照（command 动作一规则一命令）
+        - id: admin-status
+          match:
+            kinds: [message]
+            text_prefix: '#status'
+            admins_only: true
+          actions:
+            - type: command
+              name: status
+              target: qq-main
+
+        # 3) 管理员命令：#recall <message_id> 撤回（命令内部再强制 admin 白名单）
+        - id: admin-recall
+          match:
+            kinds: [message]
+            text_prefix: '#recall'
+            admins_only: true
+          actions:
+            - type: command
+              name: recall
+              target: qq-main
+
+        # 3) 命中事件转告警群（复用 target 发送链路）
+        - id: alert-on-offline
+          match:
+            kinds: [notice, notification]
+            notice_types: [bot_offline, account]
+          actions:
+            - type: forward
+              to_group: 999999
+              to_admins: true
+              prefix: '[QQ 告警] '
+              target: qq-alert
+
+        - id: alert-on-essence
+          match:
+            kinds: [notice]
+            notice_types: [essence]
+          actions:
+            - type: forward
+              to_group: 999999
+              prefix: '[精华消息] '
+              target: qq-alert
+
+        # 4) quick operation：作为 webhook 响应体交回桥执行（免显式调用）
+        - id: quick-ack
+          match:
+            kinds: [message]
+            text_prefix: '#ack'
+          actions:
+            - type: quick_operation
+              reply: '收到 {user_id}'
+              at_sender: false
+
+      recover:                               # historySync 补缺联动（漏监控兜底）
+        enabled: true
+        history_sync: hist
+        interval_ms: 300000
+        max_age_ms: 3600000
+        max_events: 200
+        stale_dispatch_ms: 300000

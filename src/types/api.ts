@@ -42,6 +42,14 @@ export interface SendInput {
   }
   rendered: RenderedPayload
   route: { crawler: string; formatter?: string | null; target: string }
+  /**
+   * Destination override (inbound reactions reply into the event's own scope
+   * instead of the target's configured group). Absent = the target default
+   * (`group_id` for target/qq).
+   */
+  dest?: { kind: 'group' | 'private'; id: number | string }
+  /** quote-reply anchor: emitted as a OneBot `reply` segment (SnowLuma auto-attaches the cached original) */
+  reply?: { message_id: number | string }
 }
 
 /** target/* service contract */
@@ -61,6 +69,13 @@ export interface QqTargetOps {
   verifyReceipts: (outboundId: number) => Promise<Array<{ message_id: number | string; found: boolean; error?: string }>>
   /** QQ bridge health/circuit snapshot */
   health: () => unknown
+  /**
+   * Inbound bridge/bot status signal (SnowLuma `bot_offline` notice, account
+   * notifications): feeds the health board so the send gate defers instead of
+   * failing while the bot is known offline (`'online'` closes the circuit
+   * early). Wired by app/qq-ingress.
+   */
+  noteBridgeEvent: (kind: 'offline' | 'online', detail?: string) => void
 }
 
 /** target/qq service contract */

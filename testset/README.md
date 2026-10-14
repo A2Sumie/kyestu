@@ -31,7 +31,7 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 
 ### 用例总数与 tests/ 的关系
 
-- testset 实际 **107 条 entry，107 个唯一 id**（2026-10-14 增补 SnowLuma 适配层 8 条）：parity 层 78 条（cases/10–80），符合性层 29 条（LC 11 + FI 6 + SH 4 + SL 8）。旧文档"82 条（71+21）"的说法已过时。新增的 `cases/96-snowluma.yaml`（SL-01..08）带 `test:` 字段逐条映射到 tests/ 的实际钉点（docs/snowluma.md 为语义规范）。
+- testset 实际 **115 条 entry，115 个唯一 id**（2026-10-14 增补 SnowLuma 适配层 8 条 + 入站事件/反应层 8 条）：parity 层 78 条（cases/10–80），符合性层 37 条（LC 11 + FI 6 + SH 4 + SL 16）。旧文档"82 条（71+21）"的说法已过时。新增的 `cases/96-snowluma.yaml`（SL-01..16）带 `test:` 字段逐条映射到 tests/ 的实际钉点（docs/snowluma.md 为语义规范；SL-09..16 为入站事件通道与反应积木，映射 tests/qq-events.test.ts、tests/qq-ingress.test.ts）。
 - 本次修复的历史遗留（全部因 harness 缺席、文件从未被机器解析而未暴露）：HC-07 撞号——2026-08-21 新增的冷却隔离用例（commit 7dd62ea）与 08-16 既有的内容新鲜度 TTL 用例同号，已将后者改号 **HC-08**（PITFALLS D4、HC-01 交叉引用与 `test:` 字段均指冷却隔离那条，保持 HC-07 不动）；另修复两处 YAML 语法错误（40-outbound-dedup.yaml `>2h` 未加引号被读成块标量头、80-processor.yaml 两处值内嵌套映射）。
 - `bun test`（tests/，本批次基线 383 pass）是**独立生长的套件，不引用任何 testset 用例 id**；v1 报告（08-16）的"248 tests"是同一 bun 套件的当时快照。testset ↔ tests/ 之间唯一的机器链接是 HC-07 的 `test: tests/cooldown-isolation.test.ts` 字段。
 - 结论：testset 目前主要是**规范层**；把它系统接到 bun test（逐条建立映射或造 harness）是一个独立项目，本批次不做。
@@ -46,7 +46,7 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 | hermetic 渲染 | **已实现** | `RENDER_REMOTE_ASSETS=0` + `FONTS_DIR` 默认指向 assets/fonts（src/components/formatter.ts、src/pipeline/summary-card.ts；tests/summary-card.test.ts、shortcircuit.test.ts 使用） |
 | 影子运行（独立 DB/CACHE_DIR） | **未实现** | 无影子基础设施；且需旧系统并行部署，SH-01..04 全部 blocked |
 
-### 符合性层 29 条逐条状态（21 条原表 + SL-01..08，SL 逐条见 96-snowluma.yaml 的 `test:` 映射，8 条均 executable-covered）
+### 符合性层 37 条逐条状态（21 条原表 + SL-01..16，SL 逐条见 96-snowluma.yaml 的 `test:` 映射，16 条均 executable-covered）
 
 | id | 状态 | 证据 / 缺口 |
 |---|---|---|
