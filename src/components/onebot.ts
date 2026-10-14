@@ -188,6 +188,24 @@ export class OneBotClient {
         filename,
         file_retention: opts.fileRetentionMs ?? 600_000,
       })
+      // Bridges that merge inline (NapCat-style: the `is_complete` data call
+      // returns the completion) already carry file_path here.
+      if (result?.file_path) break
+    }
+    if (!result?.file_path) {
+      // SnowLuma semantics (packages/onebot/src/actions/stream-file.ts): a call
+      // carrying chunk_data always acks `chunk_received`; the completion frame
+      // (file_path/file_name/file_size/sha256) only arrives from a separate
+      // data-less `is_complete` call. Send it when the chunks did not complete.
+      result = await this.call('upload_file_stream', {
+        stream_id: streamId,
+        is_complete: true,
+        total_chunks: totalChunks,
+        file_size: bytes.length,
+        expected_sha256: sha256,
+        filename,
+        file_retention: opts.fileRetentionMs ?? 600_000,
+      })
     }
     const filePathOut = result?.file_path
     if (!filePathOut) {

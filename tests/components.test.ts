@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { mkdtempSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { createRoot, createRegistry, Loader, NodeHandle, nodeKey } from '../src/index'
@@ -163,6 +163,60 @@ test('onebot: group send posts correct payload; retcode 200 maps to non-retryabl
   )
   expect(seen[0]).toMatchObject({ action: 'send_group_msg', payload: { group_id: 123 } })
   expect(seen[1].action).toBe('send_private_msg')
+})
+
+test('onebot: uploadFileStream finishes with a data-less is_complete call (SnowLuma chunk frames never complete)', async () => {
+  // SnowLuma semantics (its packages/onebot/src/actions/stream-file.ts): every
+  // data-bearing call acks `chunk_received` regardless of `is_complete`; the
+  // completion frame with `file_path` only comes from a separate data-less
+  // `is_complete` call. Regression: the old sequence sent `is_complete` on the
+  // last data chunk and read `file_path` from its `chunk_received` frame.
+  const { createHash } = await import('crypto')
+  const dir = mkdtempSync(join(tmpdir(), 'kyestu-upload-stream-'))
+  const filePath = join(dir, 'clip.bin')
+  const payload = Buffer.alloc(25, 7)
+  await Bun.write(filePath, payload)
+  const sha = createHash('sha256').update(payload).digest('hex')
+  const seen: any[] = []
+  try {
+    await withMockOneBot(
+      (action, payloadBody) => {
+        seen.push({ action, payload: payloadBody })
+        const data =
+          payloadBody.chunk_data !== undefined
+            ? { type: 'stream', status: 'chunk_received' }
+            : payloadBody.is_complete === true
+              ? {
+                  type: 'response',
+                  status: 'file_complete',
+                  file_path: '/app/data/stream/upload/clip.bin',
+                  file_name: 'clip.bin',
+                  file_size: 25,
+                  sha256: sha,
+                }
+              : { type: 'stream', status: 'file_created' }
+        return { status: 'ok', retcode: 0, data }
+      },
+      async (url) => {
+        const client = new OneBotClient({ http_url: url, upload_chunk_bytes: 10 })
+        const res = await client.uploadFileStream(filePath, { filename: 'clip.bin' })
+        expect(res.file_path).toBe('/app/data/stream/upload/clip.bin')
+        expect(res.sha256).toBe(sha)
+      },
+    )
+    // 3 chunk calls + 1 data-less completion call
+    expect(seen).toHaveLength(4)
+    expect(seen.every((s) => s.action === 'upload_file_stream')).toBe(true)
+    const finish = seen[3].payload
+    expect(finish.is_complete).toBe(true)
+    expect(finish.chunk_data).toBeUndefined()
+    expect(finish.chunk_index).toBeUndefined()
+    expect(finish.stream_id).toBe(seen[0].payload.stream_id)
+    expect(finish.total_chunks).toBe(3)
+    expect(finish.expected_sha256).toBe(sha)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ---------- llm openai ----------
