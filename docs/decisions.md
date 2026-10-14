@@ -225,3 +225,8 @@ runtime 忠实实现了论文语义，但论文把若干正确性前提显式标
    blog/其它来源保留来源标记是两仓库共同取舍（用户口径的省略清单只列了 YouTube 长视频译题）。
 4. **测试钉**：`tests/bili-title.test.ts` 模板快照对照用例（译题省略 vs 概括/Shorts/无原标题/日期壳保留）
    + `resolveTitleSourceTag` 单元钉；`tests/v11.test.ts` 上传端到端标题快照同步（TT 带 `[TT]`）。
+5. **边界更正（2026-10-14，用户裁定）**：本条**只含来源标记条件化**。idol-bbq 同期还有一笔"冻结严格化"
+   （`ad215f5`：force/x-link 立即转帖/手动重发纳入 block_rules、per-target `block_rules_apply_to_force_send`）
+   ——那笔**不在用户指令范围**，已按裁定在 idol-bbq 撤回（revert `dd1fc6a`），**force 保持人工逃生舱语义
+   （绕过 block_rules）**；kyestu 从未实现该语义，无需撤销。上条 3 的"与 idol-bbq 无行为差异"仅指本条
+   来源标记口径，维持有效。
