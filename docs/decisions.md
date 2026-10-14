@@ -203,3 +203,25 @@ runtime 忠实实现了论文语义，但论文把若干正确性前提显式标
 6. **LLM 标签生成不移植**（遗留项）：kyestu 标签仍是静态 `video_upload.tags`；导入器对 idol-bbq 的
    `tag_generation` 告警跳过。厂商 provider 名只在导入器映射（D5）：`title_generation.provider` →
    OpenAI 兼容端点默认值；`metadata_templates.*` → `title_template`/`desc_template`（`{{key}}`→`{key}`）。
+
+## D22：B 站标题来源标记条件化（2026-10-14）
+
+背景：D21/D18 把 `[来源]` 从标题整体去掉后，用户反馈"来源有些情况还得有"——概括出来的标题
+（X/IG/TT、Shorts、无原标题条目、日期壳兜底）没有出处辨识度，需要来源标记；只有"标题=原标题译文"
+的 YouTube 长视频能自证出处。idol-bbq 侧同步落地（`73c722a`），本条把同语义落 kyestu 并钉对照用例。
+语义规范见 **docs/bili-title.md §来源标记条件化**。要点：
+
+1. **条件口径（两仓库逐字一致）**：保留 `[X]/[ins]/[TT]`（概括标题）、`[YT]`（Shorts / 无原标题 YouTube /
+   日期壳兜底，含 YouTube 长视频退化到日期壳时）、`[blog]`/`[社媒]`（website 及其它不在省略清单）；
+   **仅** YouTube 长视频（type≠shorts）且 content 首行有原标题且 headline 非空时省略——此时标题=
+   原标题译文，标题本身自证出处。
+2. **实现=模板条件槽位**：默认模板加回 `[{source_tag}]`（`DEFAULT_TITLE_TEMPLATE`）；`resolveTitleSourceTag`
+   （导出，测试直接钉）把槽位渲染为裸标签或空串；`stripEmptyRenderedBrackets` 让空槽连同一个后随半角
+   空格一起消失——省略态与无槽位模板逐字一致、保留态=旧格式 `【acc】[TT] 08.16_26 …`。`buildTitleFallback`
+   （兜底壳）走同一条件；LLM 输入 `source_context.source_tag` 仍是**真实来源标签**（来源元数据，
+   不受槽位条件化影响，与 idol-bbq 一致）。
+3. **与 idol-bbq 的差异**：无行为差异。仅两处无关行为的实现差异：占位符语法（kyestu `{key}` /
+   idol-bbq `{{key}}`，D21 既有）；`type` 判 shorts 用 `toLowerCase()` 防御大小写（idol-bbq 枚举精确比较）。
+   blog/其它来源保留来源标记是两仓库共同取舍（用户口径的省略清单只列了 YouTube 长视频译题）。
+4. **测试钉**：`tests/bili-title.test.ts` 模板快照对照用例（译题省略 vs 概括/Shorts/无原标题/日期壳保留）
+   + `resolveTitleSourceTag` 单元钉；`tests/v11.test.ts` 上传端到端标题快照同步（TT 带 `[TT]`）。

@@ -14,6 +14,7 @@ import {
   normalizeGeneratedTitle,
   parseGeneratedTitle,
   resolveBiliTitle,
+  resolveTitleSourceTag,
   resolveTitleTask,
   truncateTitleText,
 } from '../src/pipeline/bili-title'
@@ -21,8 +22,8 @@ import { uploadVideo } from '../src/pipeline/biliup'
 import { createTitleGenerationLlm } from '../src/components/target-bilibili'
 
 /**
- * B 站标题链路（译题/概括）：与 idol-bbq d56c0d2 行为对齐的钉点。
- * ①译题输入=原标题 ②模板快照 ③语义截断 ④兜底链 ⑤译名一致/日文专名合法 ⑥未译回显拒收。
+ * B 站标题链路（译题/概括）：与 idol-bbq `biliup.ts` 行为对齐的钉点。
+ * ①译题输入=原标题 ②模板快照（含来源标记条件化对照） ③语义截断 ④兜底链 ⑤译名一致/日文专名合法 ⑥未译回显拒收。
  */
 
 const TZ = 'Asia/Tokyo'
@@ -81,20 +82,47 @@ test('译题 prompt：few-shot + 忠实翻译约束（original_title 唯一素�
   expect(buildTitleGenerationPrompt('translate_original_title', 8, 32, 'custom')).toBe('custom')
 })
 
-// ---------- ② 模板快照（统一模板，无 [来源] 段） ----------
+// ---------- ② 模板快照（统一模板，来源标记条件化） ----------
 
-test('模板快照：youtube = 译文首行；X/IG/TT 无 [来源] 段；空账号退化为【22/7】日期壳', () => {
+test('模板快照：来源标记条件化 — 概括/Shorts/无原标题/日期壳保留，译题省略', () => {
+  // YouTube 长视频且标题=原标题译文：省略 [YT]（标题本身自证出处）
   expect(deriveDeterministicTitle(ytArticle, TZ)).toBe('【22/7 北原実咲】08.16_26 北原实咲的兔子话题')
-  expect(deriveDeterministicTitle(ttArticle, TZ)).toBe('【22/7 望月りの】08.16_26 用粉丝送我的プリキット试着跳了舞')
+  // X / IG / TT 概括标题：保留来源标记（标题无出处辨识度）
+  expect(deriveDeterministicTitle(ttArticle, TZ)).toBe('【22/7 望月りの】[TT] 08.16_26 用粉丝送我的プリキット试着跳了舞')
   const noTranslation = { ...ttArticle, translation: null }
-  expect(deriveDeterministicTitle(noTranslation, TZ)).toBe('【22/7 望月りの】08.16_26 元のキャプション')
+  expect(deriveDeterministicTitle(noTranslation, TZ)).toBe('【22/7 望月りの】[TT] 08.16_26 元のキャプション')
+  // 日期壳兜底（无任何内容辨识度）：保留来源标记
   const noAccount = { platform: 'twitter', a_id: '9', u_id: '', username: '', url: 'u', content: '', created_at: TS }
-  expect(deriveDeterministicTitle(noAccount, TZ)).toBe('【22/7】08.16_26')
+  expect(deriveDeterministicTitle(noAccount, TZ)).toBe('【22/7】[X] 08.16_26')
+  // YouTube Shorts：保留 [YT]
+  const shorts = { ...ytArticle, type: 'shorts' }
+  expect(deriveDeterministicTitle(shorts, TZ)).toBe('【22/7 北原実咲】[YT] 08.16_26 北原实咲的兔子话题')
+  // YouTube 无原标题（概括路径）：保留 [YT]
+  const noOriginalTitle = { ...ytArticle, content: '' }
+  expect(deriveDeterministicTitle(noOriginalTitle, TZ)).toBe('【22/7 北原実咲】[YT] 08.16_26 北原实咲的兔子话题')
+  // 日期壳兜底即使发生在 YouTube 长视频上也保留 [YT]
+  const dateShell = { ...ytArticle, content: 'YouTube', translation: null }
+  expect(deriveDeterministicTitle(dateShell, TZ)).toBe('【22/7 北原実咲】[YT] 08.16_26')
 })
 
-test('模板快照：自定义模板仍受支持，{source_tag} 等键保留', () => {
+test('模板快照：自定义模板仍受支持，{source_tag} 等键保留（空槽连同后随空格消失）', () => {
   const title = deriveDeterministicTitle(ttArticle, TZ, '【{account_title}】[{source_tag}] {date_code} {headline}')
   expect(title).toBe('【22/7 望月りの】[TT] 08.16_26 用粉丝送我的プリキット试着跳了舞')
+  // 译题（省略来源标记）走同一空槽清理：不留 `】 ` 尾随空格
+  const tagless = deriveDeterministicTitle(ytArticle, TZ, '【{account_title}】[{source_tag}] {date_code} {headline}')
+  expect(tagless).toBe('【22/7 北原実咲】08.16_26 北原实咲的兔子话题')
+})
+
+test('resolveTitleSourceTag 单元钉：只有译题（YouTube 长视频+原标题+正文非空）返回空串', () => {
+  expect(resolveTitleSourceTag(ytArticle, true)).toBe('')
+  // Shorts / 无原标题 / 日期壳（正文空）一律保留
+  expect(resolveTitleSourceTag({ ...ytArticle, type: 'shorts' }, true)).toBe('YT')
+  expect(resolveTitleSourceTag({ ...ytArticle, content: '' }, true)).toBe('YT')
+  expect(resolveTitleSourceTag(ytArticle, false)).toBe('YT')
+  expect(resolveTitleSourceTag(ttArticle, true)).toBe('TT')
+  expect(resolveTitleSourceTag({ ...ttArticle, platform: 'twitter' }, true)).toBe('X')
+  expect(resolveTitleSourceTag({ ...ttArticle, platform: 'instagram' }, true)).toBe('ins')
+  expect(resolveTitleSourceTag({ ...ttArticle, platform: 'website' }, true)).toBe('blog')
 })
 
 test('兜底链第2/3级：译文首行 → 原标题原文', () => {

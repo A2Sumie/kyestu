@@ -13,15 +13,32 @@
 统一默认格式（代码默认 `DEFAULT_TITLE_TEMPLATE`，`video_upload.title_template` 可覆盖）：
 
 ```
-【{account_title}】{upload_summary}   →   【22/7 北原実咲】08.16_26 <标题正文>
+【{account_title}】[{source_tag}] {upload_summary}   →   【22/7 北原実咲】[X] 08.16_26 <标题正文>
 ```
 
 - `【22/7 …】` 品牌前缀：`22/7` + 账号显示名（`username ?? u_id`）。识别不到账号时退化为 `【22/7】`。
   B 站搜索锚点与频道识别，保留。
+- `[{source_tag}]` **条件化来源标记**（下表）：渲染为 `[YT]/[X]/[ins]/[TT]/[blog]` 或**空**；
+  为空时 `[ ]` 槽位连同后随空格一起消失，标题与无槽位模板逐字一致。
 - `MM.DD_YY` 发布日期码（如 `06.17_26`）：按时间浏览、同题去重，保留。
 - 标题正文：YouTube = **原标题的中文翻译**；其它来源 = 正文开头事实的中文翻译/浓缩。
-- **`[YT]/[X]/[ins]/[TT]` 来源括号已去掉**：无搜索价值、像搬运标记、占 80 字预算；来源在简介 `来源:`
-  行署名。需要旧行为的自定义模板仍可用 `{source_tag}` 键（如 `【{account_title}】[{source_tag}] {upload_summary}`）。
+  来源在简介 `来源:` 行始终署名（与标题槽位无关）。
+
+### 来源标记条件化（何时带 `[来源]`、何时不带）
+
+口径：**标题能自证出处就不带来源标记，标题是概括/兜底出来的才带**（与 idol-bbq `resolveTitleSourceTag` 一致）：
+
+| 来源 / 标题形态 | 来源标记 | 例 |
+|---|---|---|
+| X / Instagram / TikTok（概括标题，无出处辨识度） | **保留** `[X]`/`[ins]`/`[TT]` | `【22/7 望月りの】[TT] 08.16_26 用粉丝送我的プリキット试着跳了舞` |
+| YouTube Shorts | **保留** `[YT]` | `【22/7 北原実咲】[YT] 08.16_26 北原实咲的兔子话题` |
+| YouTube 无原标题（content 首行非创作者标题） | **保留** `[YT]` | `【22/7 北原実咲】[YT] 08.16_26 北原实咲的兔子话题` |
+| 兜底日期壳标题（headline 清洗后为空，`upload_summary` 只剩 `MM.DD_YY`） | **保留**（YouTube 长视频退化到日期壳时同样保留） | `【22/7 北原実咲】[YT] 08.16_26` |
+| **YouTube 长视频**（type ≠ shorts）且 content 首行有原标题，标题=原标题译文 | **省略** | `【22/7 北原実咲】08.16_26 北原实咲的兔子话题` |
+| website / blog 及其它（不在省略清单） | **保留** `[blog]`/`[社媒]` | — |
+
+确定性兜底标题（`buildTitleFallback`）走同一条件；LLM 输入 `source_context.source_tag` 仍是
+**真实来源标签**，不受槽位条件化影响。
 
 ## 译题（translate_original_title）
 
@@ -50,7 +67,7 @@
 5. **合格性校验**：无汉字拒收；假名占绝对多数（未译回显）拒收；标题党禁词拒收。超长不拒收，安全截断。
 6. **兜底链**：`LLM 译题 → translation 首行 → 原标题原文 → 【22/7】MM.DD_YY 日期壳 → 平台标签+时间+
    article_id 硬壳`。LLM 不可用/译文不合格/解析失败时确定性标题原样交付；空标题、纯日期、纯标点
-   一律走壳，不产空壳正文。
+   一律走壳，不产空壳正文；**日期壳/硬兜底标题一律保留来源标记**（无任何内容辨识度）。
 
 ## LLM 输入 / 输出
 
@@ -101,11 +118,12 @@ video_upload:
 
 ## 与 idol-bbq 的行为对照
 
-| 项 | idol-bbq（d56c0d2） | kyestu（本实现） | 一致性 |
+| 项 | idol-bbq（d56c0d2 / 来源标记 73c722a） | kyestu（本实现） | 一致性 |
 |---|---|---|---|
 | 主标题=原标题忠实翻译（YouTube） | ✅ | ✅ | 一致 |
 | X/IG/TT 忠实概括 / website 不进 LLM | ✅ | ✅ | 一致 |
-| 模板去 `[来源]` 段、留品牌前缀+日期码 | ✅ `【{{account_title}}】{{upload_summary}}` | ✅ `【{account_title}】{upload_summary}`（占位符语法用 kyestu 单括号） | 一致（语法差异） |
+| 模板留品牌前缀+日期码，`[来源]` 条件化槽位 | ✅ `【{{account_title}}】[{{source_tag}}] {{upload_summary}}` | ✅ `【{account_title}】[{source_tag}] {upload_summary}`（占位符语法用 kyestu 单括号） | 一致（语法差异） |
+| 来源标记条件化（译题省略、概括/Shorts/无原标题/日期壳保留） | ✅ `resolveTitleSourceTag` | ✅ `resolveTitleSourceTag`（同一条件表） | 一致 |
 | 原标题进简介 `原标题:` 行（去重） | ✅ | ✅ | 一致 |
 | few-shot 译题 prompt + 65 条译名 glossary | ✅ | ✅（同一张译名表，只取译名事实） | 一致 |
 | 校验：无汉字/假名绝对多数/标题党拒收 | ✅ | ✅ | 一致 |

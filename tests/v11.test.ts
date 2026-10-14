@@ -200,7 +200,7 @@ test('live relay: starts recording + emits event on live, stops + emits on end',
     expect(events[0].file).toContain('member-')
 })
 
-test('biliup title: production format, no [来源] tag in the title', async () => {
+test('biliup title: production format, 来源标记条件化（TT 概括标题保留 [TT]）', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'kyestu-fake-biliup-'))
   const helper = join(dir, 'helper.py')
   writeFileSync(
@@ -233,7 +233,7 @@ test('biliup title: production format, no [来源] tag in the title', async () =
     )
     const argv = readFileSync(argvOut, 'utf8').split('\n')
     const title = argv[argv.indexOf('--title') + 1]!
-    expect(title).toBe('【22/7 望月りの】08.16_26 用粉丝送我的プリキット试着跳了舞')
+    expect(title).toBe('【22/7 望月りの】[TT] 08.16_26 用粉丝送我的プリキット试着跳了舞')
     expect(title).not.toContain('望月りの 08.16')
     expect(title).not.toContain('元のキャプション') // translated caption wins
   } finally {

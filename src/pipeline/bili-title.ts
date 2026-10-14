@@ -13,6 +13,9 @@ import { fileURLToPath } from 'url'
  * 确定性后处理对 LLM 输出与确定性标题同时生效：平台词清洗、emoji 收敛、空白/括号规范化、
  * ≤80 字（码点）语义安全截断。兜底链：LLM 译题 → translation 首行 → 原标题原文 →
  * `【22/7】MM.DD_YY` 日期壳 → 平台标签+时间+article_id 硬壳。
+ *
+ * 来源标记条件化（`[{source_tag}]` 槽位）：标题能自证出处就省略，概括/兜底标题保留，
+ * 条件表见 `resolveTitleSourceTag`。空槽连同后随空格一起消失，省略态与无槽位模板逐字一致。
  */
 
 // ---------- constants ----------
@@ -22,8 +25,12 @@ const MAX_TITLE_HEADLINE_CHARS = 40
 const DEFAULT_TITLE_MIN_CHARS = 4
 const DEFAULT_TITLE_MAX_CHARS = 32
 export const BILIUP_ORIGINAL_TITLE_LABEL = '原标题:'
-/** 统一默认模板：品牌前缀 + 日期码 + 标题正文；`[来源]` 段不再进标题（简介署名） */
-export const DEFAULT_TITLE_TEMPLATE = '【{account_title}】{upload_summary}'
+/**
+ * 统一默认模板：品牌前缀 + 条件化来源槽位 + 日期码 + 标题正文。
+ * `[{source_tag}]` 条件渲染：标题能自证出处时为空（连同后随空格一起消失），
+ * 否则渲染 `[YT]/[X]/[ins]/[TT]/[blog]`（条件表见 `resolveTitleSourceTag`）。
+ */
+export const DEFAULT_TITLE_TEMPLATE = '【{account_title}】[{source_tag}] {upload_summary}'
 
 const BILIUP_FORBIDDEN_TITLE_TERMS = [
   '震惊',
@@ -98,6 +105,24 @@ const SOURCE_TAGS: Record<string, string> = {
   instagram: 'ins',
   youtube: 'YT',
   website: 'blog',
+}
+
+/**
+ * 条件化来源标记：`{source_tag}` 渲染为裸标签或空串。
+ *
+ * 口径（与 idol-bbq `biliup.ts` 一致）：标题能自证出处就不带来源标记，标题是概括/兜底出来的才带。
+ * - 保留：X / Instagram / TikTok（概括标题）、YouTube Shorts、无原标题的 YouTube 条目、
+ *   日期壳兜底（`upload_summary` 只剩 `MM.DD_YY`、无正文，如 `【22/7】03.20_24`）、website/blog 及其它；
+ * - 省略：仅 YouTube 长视频（type ≠ shorts）且 content 首行有原标题且正文非空——
+ *   此时标题=原标题译文，标题本身自证出处。
+ */
+export function resolveTitleSourceTag(article: BiliTitleArticle, hasTitlePayload: boolean): string {
+  const titleIsTranslatedOriginalTitle =
+    article.platform === 'youtube' &&
+    String(article.type ?? '').toLowerCase() !== 'shorts' &&
+    Boolean(extractOriginalTitleLine(article)) &&
+    hasTitlePayload
+  return titleIsTranslatedOriginalTitle ? '' : (SOURCE_TAGS[article.platform ?? ''] ?? '社媒')
 }
 
 // ---------- types ----------
@@ -360,15 +385,15 @@ function primaryTitleLine(article: BiliTitleArticle): string {
   return firstNonEmptyLine(source)
 }
 
-function resolveUploadSummary(article: BiliTitleArticle, dateTime: DateTimeParts): string {
+function resolveUploadSummary(dateTime: DateTimeParts, headline: string): string {
   // headline 先清洗后语义截断到 40 字（码点），把 80 字标题预算的大头留给固定前缀之后
-  const headline = truncateTitleText(scrubTitlePayload(primaryTitleLine(article)), MAX_TITLE_HEADLINE_CHARS)
   return [dateTime.date_code, headline].filter(Boolean).join(' ').trim()
 }
 
 export function buildTitleContext(article: BiliTitleArticle, timeZone: string): TitleTemplateContext {
   const dateTime = formatDateTimeParts(article.created_at, timeZone)
   const displayName = String(article.username ?? article.u_id ?? '').trim()
+  const headline = truncateTitleText(scrubTitlePayload(primaryTitleLine(article)), MAX_TITLE_HEADLINE_CHARS)
   return {
     account_title: resolveAccountTitle(displayName),
     a_id: String(article.a_id ?? ''),
@@ -377,12 +402,12 @@ export function buildTitleContext(article: BiliTitleArticle, timeZone: string): 
     date_code: dateTime.date_code,
     date_short: dateTime.date_short,
     datetime: dateTime.datetime,
-    headline: truncateTitleText(scrubTitlePayload(primaryTitleLine(article)), MAX_TITLE_HEADLINE_CHARS),
+    headline,
     platform: String(article.platform ?? ''),
-    source_tag: SOURCE_TAGS[article.platform ?? ''] ?? '社媒',
+    source_tag: resolveTitleSourceTag(article, Boolean(headline)),
     time: dateTime.time,
     u_id: String(article.u_id ?? ''),
-    upload_summary: resolveUploadSummary(article, dateTime),
+    upload_summary: resolveUploadSummary(dateTime, headline),
     url: String(article.url ?? ''),
     username: displayName,
   }
@@ -395,6 +420,8 @@ function stripEmptyRenderedBrackets(value: string): string {
     .replace(/『\s*』/g, '')
     .replace(/（\s*）/g, '')
     .replace(/\(\s*\)/g, '')
+    // 空的 `[...]` 来源槽位连同一个后随半角空格一起消失：省略态标题与无槽位模板逐字一致
+    .replace(/\[[ \t]*\][ \t]?/g, '')
     .replace(/\[\s*\]/g, '')
     // 只折横向空白：简介模板带换行结构（`原标题:` 行、正文分段）不能被压成一行
     .replace(/[ \t]{2,}/g, ' ')
@@ -442,7 +469,9 @@ function hardTitleFallback(context: TitleTemplateContext): string {
 }
 
 export function buildTitleFallback(context: TitleTemplateContext): string {
-  const shell = stripEmptyRenderedBrackets(`【${context.account_title}】${context.upload_summary}`)
+  const shell = stripEmptyRenderedBrackets(
+    `【${context.account_title}】[${context.source_tag}] ${context.upload_summary}`,
+  )
   return normalizeMainTitleText(shell, hardTitleFallback(context))
 }
 
@@ -532,6 +561,7 @@ export function buildTitleGenerationInput(
     title_max_chars: bounds.maxChars,
     source_context: {
       platform: article.platform || '',
+      // 真实来源标签（给模型的来源元数据）：不受标题槽位条件化影响
       source_tag: SOURCE_TAGS[article.platform ?? ''] ?? '社媒',
       type: article.type || '',
       username: article.username || '',
