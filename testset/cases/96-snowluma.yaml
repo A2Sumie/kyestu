@@ -1,0 +1,67 @@
+# SnowLuma 适配层（2026-10-14 D19）：双 retcode 语义、媒体解耦、message-store、健康/重投。
+# anchor 指向 kyestu 自身实现/文档（语义规范见 docs/snowluma.md）；`test:` 为实际钉住的 bun 测试。
+cases:
+  - id: SL-01
+    title: SnowLuma retcode 判读表（100/1200/1400/1401/1404/1413 + wording 细分）
+    layer: send
+    anchor: src/pipeline/onebot-semantics.ts（docs/snowluma.md §1）
+    given: 构造 SnowLuma 响应体（status:failed + 各 retcode/wording）
+    when: classifyOneBotResponse
+    then: 修配置类(1400/1401/1404/1413)不重试不重投；muted/risk_control/rate_limit 不重试可重投；1200/transport 双轴皆真
+    test: tests/onebot-semantics.test.ts
+  - id: SL-02
+    title: NapCat 旧语义回归钉：retcode=200 / result=120 仍判不可重试
+    layer: send
+    anchor: src/components/onebot.ts assertOk（docs/snowluma.md §1）
+    given: OneBot 返回 status:failed retcode:200（或 data.result=120）
+    when: 发送
+    then: 抛 OneBotNonRetryableError（同载荷不重试）、redrivable=true（冷却后重投）、30min 冷却
+    test: tests/qq-target.test.ts
+  - id: SL-03
+    title: 媒体来源决策表：SnowLuma URL/base64/stream 优先，file:// 回退；NapCat/未知桥逐字节兼容
+    layer: send
+    anchor: src/pipeline/onebot-media.ts（docs/snowluma.md §2）
+    given: 同一媒体文件 × 三种方言/尺寸/配置组合
+    when: decideMediaSource / buildSegments
+    then: napcat|generic → file://；snowluma → url > inline(≤1.5MB 图) > stream > file；allow_file_fallback:false 不静默回退
+    test: tests/onebot-media.test.ts
+  - id: SL-04
+    title: message_id 落库 + get_msg 回执核对 + delete_msg 撤回
+    layer: send
+    anchor: src/pipeline/outbound.ts mark/get、src/components/target-qq.ts ops（docs/snowluma.md §3）
+    given: 发送成功（mock 返回 message_id）后调 ops
+    when: verifyReceipts / recall
+    then: provider_message_ids 落库；get_msg 逐条核对写回 segment_results；delete_msg 撤回成功/失败分列
+    test: tests/qq-target.test.ts
+  - id: SL-05
+    title: historySync：get_group_msg_history 锚点翻页补缺（断线窗口回填）
+    layer: e2e
+    anchor: src/components/qq-history-sync.ts（docs/snowluma.md §3）
+    given: mock 桥先返回 2 条，随后服务端出现 3 条新消息形成时间缺口
+    when: app/qq-history-sync sync()
+    then: 最新页镜像 + 缺口锚点翻页回填至 cursor；(scope,message_id) 去重；cursor 写透 service_state
+    test: tests/qq-history-sync.test.ts
+  - id: SL-06
+    title: FI-01 钉化：桥不可用→发送抑制（不攒 failed 行）；恢复→自动继续
+    layer: e2e
+    anchor: src/pipeline/qq-health.ts + src/components/target-qq.ts（docs/snowluma.md §4）
+    given: mock 桥先 502 后恢复
+    when: 连续两次发送 + 恢复后发送
+    then: 第一次失败留 1 行 failed；第二次经健康闸 retryLater（零新增行）；恢复后探针复位、发送成功且 message_id 落库
+    test: tests/qq-target.test.ts
+  - id: SL-07
+    title: 失败重投闭环：可重投类有界退避重试，修配置类即丢，retryLater 不耗预算
+    layer: route
+    anchor: src/components/router.ts drain（docs/snowluma.md §4）
+    given: target 抛 redrivable/非 redrivable/retryLater 三种错误
+    when: router 队列扫描
+    then: 重投至 max_send_attempts 后丢+taint；redrivable:false 立即丢；retryLater 延迟重试不计数
+    test: tests/router-queue.test.ts
+  - id: SL-08
+    title: 健康熔断：muted/风控长冷却、配置错误不熔断、探针提前恢复、持久化再水合
+    layer: unit
+    anchor: src/pipeline/qq-health.ts（docs/snowluma.md §4）
+    given: 各失败类 × 冷却时钟
+    when: recordFailure/gate/runProbe/重建
+    then: 冷却表生效并指数升级；1400 类不停 target；get_status 探针可提前合闸；状态跨重建存续
+    test: tests/qq-health.test.ts

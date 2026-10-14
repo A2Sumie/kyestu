@@ -31,7 +31,7 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 
 ### 用例总数与 tests/ 的关系
 
-- testset 实际 **99 条 entry，99 个唯一 id**：parity 层 78 条（cases/10–80），符合性层 21 条（LC 11 + FI 6 + SH 4）。旧文档"82 条（71+21）"的说法已过时。
+- testset 实际 **107 条 entry，107 个唯一 id**（2026-10-14 增补 SnowLuma 适配层 8 条）：parity 层 78 条（cases/10–80），符合性层 29 条（LC 11 + FI 6 + SH 4 + SL 8）。旧文档"82 条（71+21）"的说法已过时。新增的 `cases/96-snowluma.yaml`（SL-01..08）带 `test:` 字段逐条映射到 tests/ 的实际钉点（docs/snowluma.md 为语义规范）。
 - 本次修复的历史遗留（全部因 harness 缺席、文件从未被机器解析而未暴露）：HC-07 撞号——2026-08-21 新增的冷却隔离用例（commit 7dd62ea）与 08-16 既有的内容新鲜度 TTL 用例同号，已将后者改号 **HC-08**（PITFALLS D4、HC-01 交叉引用与 `test:` 字段均指冷却隔离那条，保持 HC-07 不动）；另修复两处 YAML 语法错误（40-outbound-dedup.yaml `>2h` 未加引号被读成块标量头、80-processor.yaml 两处值内嵌套映射）。
 - `bun test`（tests/，本批次基线 383 pass）是**独立生长的套件，不引用任何 testset 用例 id**；v1 报告（08-16）的"248 tests"是同一 bun 套件的当时快照。testset ↔ tests/ 之间唯一的机器链接是 HC-07 的 `test: tests/cooldown-isolation.test.ts` 字段。
 - 结论：testset 目前主要是**规范层**；把它系统接到 bun test（逐条建立映射或造 harness）是一个独立项目，本批次不做。
@@ -46,7 +46,7 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 | hermetic 渲染 | **已实现** | `RENDER_REMOTE_ASSETS=0` + `FONTS_DIR` 默认指向 assets/fonts（src/components/formatter.ts、src/pipeline/summary-card.ts；tests/summary-card.test.ts、shortcircuit.test.ts 使用） |
 | 影子运行（独立 DB/CACHE_DIR） | **未实现** | 无影子基础设施；且需旧系统并行部署，SH-01..04 全部 blocked |
 
-### 符合性层 21 条逐条状态
+### 符合性层 29 条逐条状态（21 条原表 + SL-01..08，SL 逐条见 96-snowluma.yaml 的 `test:` 映射，8 条均 executable-covered）
 
 | id | 状态 | 证据 / 缺口 |
 |---|---|---|
@@ -61,8 +61,8 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 | LC-09 汇合性抽测 | partial | tests/confluence.test.ts 钉两条确定性性质；≥100 步随机序列抽测未实现 |
 | LC-10 broker 吸收 provider 切换 | partial | broker 并非独立 fiber——fallback 在 processor/openai 组件内（llm-openai.ts），"消费方不 reload"平凡成立；熔断→fallback→回切已由 components.test.ts + persistence-b.test.ts（llm-circuit）钉住 |
 | LC-11 健康 coeffect 静态检查 | **obsolete** | 健康 coeffect 模型已放弃（冷却/熔断落 pipeline + service_state）；静态图检查不存在 |
-| FI-01 NapCat 断开/恢复自动停复 | partial | onebot retcode 映射有钉（components.test.ts）；deactivate→recover 双周期 e2e 未钉 |
-| FI-02 群禁言抑制 | partial | 同上；禁言场景与"不攒 failed 行"未专项钉 |
+| FI-01 NapCat 断开/恢复自动停复 | **executable-covered**（2026-10-14） | tests/qq-target.test.ts「FI-01: bridge outage suppresses sends without piling failed rows」双周期钉住（502→抑制→恢复→自动继续）；语义 spec 96-snowluma.yaml SL-06 |
+| FI-02 群禁言抑制 | partial | 禁言分类与长冷却已钉（tests/onebot-semantics.test.ts muted、tests/qq-health.test.ts 长冷却）；"127 条 failed 不积累"的流量级形状由 SL-06 的健康闸路径覆盖，专项流量用例未做 |
 | FI-03 浏览器崩溃只影响本 crawler | partial | pool disconnect→evict→relaunch 有钉（components.test.ts）；"其他 crawler 无感"未钉 |
 | FI-04 LLM 熔断→fallback→回切 | **executable-covered** | tests/components.test.ts（circuit/fallback）、tests/persistence-b.test.ts（breaker 持久化、fiber 重建保持） |
 | FI-05 DB 不可用优雅降级 | blocked-on-harness | 需 SQLite 锁/只读故障注入，无实现 |
@@ -72,7 +72,7 @@ fixture 见 `fixtures/`：`config.min.yaml` 为最小配置（1 crawler / 1 proc
 | SH-03 id 迁移映射验证 | blocked-on-harness | 需生产 DB 副本；tests/import.test.ts 只测合成配置 |
 | SH-04 逐路由切流验收 | blocked-on-harness | 运维流程，需并行部署期 |
 
-汇总：**executable-covered 7 / partial 6 / blocked-on-harness 7 / obsolete 1**。标 covered 的条目由全量 `bun test` 实际执行（本批次验证 383 pass/0 fail）；partial 条目语义核心有钉但用例的完整形状未钉。
+汇总：**executable-covered 16 / partial 5 / blocked-on-harness 7 / obsolete 1**（含 SL 层 8 条全 covered）。标 covered 的条目由全量 `bun test` 实际执行（2026-10-14 验证 545 pass/0 fail）；partial 条目语义核心有钉但用例的完整形状未钉。
 
 ### parity 层 78 条状态
 

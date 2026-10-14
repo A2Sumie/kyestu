@@ -24,7 +24,7 @@
 ## 可靠性兜底(丢事件时谁接住)
 
 - **crawler→router 段**:router 的内存队列已写透到 `service_state`(router.ts `routerQueueStore`),fiber 重载/进程重启后按 outbound 记录对账重建;target fiber 暂未起来时有界重试(默认 ~1 分钟),超限丢弃并记 router 的 taint——丢不再是静默的。
-- **router→target 段**:sqlite 幂等兜底——`outbound.claim` 幂等键 + stale reclaim + 尝试上限,`forward_by` 文章级去重(参见 src/pipeline/outbound.ts)。
+- **router→target 段**:sqlite 幂等兜底——`outbound.claim` 幂等键 + stale reclaim + 尝试上限,`forward_by` 文章级去重(参见 src/pipeline/outbound.ts)。**失败语义（2026-10-14 D19 起）**：dispatch 异常不再静默丢——修配置类(`redrivable:false`)立即丢 + taint；`retryLater`(claim 被持有/QQ 熔断中)退避重试不消耗重试预算（`MAX_QUEUE_DEFERS` 兜底）；其余按 `send_backoff_ms` 指数退避重投、`max_send_attempts`(默认 5)后丢 + taint。原"target 抛错=drop 不重试"的不对称已被 D19 推翻并转为裁决。
 - **session 段**:事件是瞬态信号(某 key 何时迁移、何时将过期);**当前状态永远在 SessionHealthBoard 里**(`ctx.get('cookie-health')` / `/api/cookie-health`),丢一条 transition 事件不丢状态。board 本身写透 `service_state`。
 
 ## 与其他通信机制的边界

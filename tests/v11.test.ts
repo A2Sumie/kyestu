@@ -374,10 +374,10 @@ test('outbound: crashed sending claim is reclaimed after the stale window; cappe
   // fresh 'sending' claim is still duplicate-in-progress
   const inProgress = outbound.claim(key, { text: 'a' })
   expect(inProgress.duplicate).toBe('in_progress')
-  // attempt exhaustion: 5 total attempts -> permanent in_progress
+  // attempt exhaustion: 5 total attempts -> never reclaimed ('exhausted' verdict)
   db.db.query('UPDATE outbound_messages SET attempt_count = 5, updated_at = ? WHERE id = ?').run(Date.now() - 31 * 60 * 1000, first.id)
   const exhausted = outbound.claim(key, { text: 'a' })
-  expect(exhausted.duplicate).toBe('in_progress')
+  expect(exhausted.duplicate).toBe('exhausted')
   // failed rows are retried regardless of age until cap
   outbound.mark(first.id, 'failed', 'err')
   db.db.query('UPDATE outbound_messages SET attempt_count = 3, updated_at = ? WHERE id = ?').run(Date.now() - 31 * 60 * 1000, first.id)

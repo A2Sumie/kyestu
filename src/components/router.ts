@@ -18,15 +18,22 @@ interface QueuedEvent {
   event: ArticleEvent
   /** in-memory defer count while a matched route target fiber is not up yet */
   defers: number
+  /** failed send attempts (bounded redrive); not persisted across restarts */
+  attempts: number
+  /** earliest ms timestamp the next dispatch attempt may run (backoff) */
+  nextAt: number
 }
 
 /** ~1 minute at the default 1s sweep; then the event is dropped with a taint */
 const MAX_QUEUE_DEFERS = 60
 
+/** default send-redrive budget per article (matches the outbound 5-attempt cap) */
+const DEFAULT_MAX_SEND_ATTEMPTS = 5
+
 /** drives crawler -> formatter -> target flows for every new article */
-export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms?: number }> = {
+export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms?: number; max_send_attempts?: number; send_backoff_ms?: number }> = {
   inject: ['bus', 'db'],
-  knownWithKeys: ['routes', 'retry_interval_ms'],
+  knownWithKeys: ['routes', 'retry_interval_ms', 'max_send_attempts', 'send_backoff_ms'],
   apply: (ctx, config) => {
     const bus = ctx.get<Bus>('bus')!
     const db = ctx.get<KyestuDb>('db')!
@@ -83,9 +90,16 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
           route.from === event.crawlerId &&
           (route.to ?? []).some((targetId) => !outbound.forwarded(event.platform as any, event.a_id, targetId)),
       )
-      if (undelivered) queue.push({ event, defers: 0 })
+      if (undelivered) queue.push({ event, defers: 0, attempts: 0, nextAt: 0 })
     }
     persistQueue() // reconcile the stored copy with the hydrated one
+
+    const maxSendAttempts = Math.max(1, Number(config.max_send_attempts ?? DEFAULT_MAX_SEND_ATTEMPTS))
+    const sendBackoffBase = Math.max(0, Number(config.send_backoff_ms ?? 2000))
+    /** exponential backoff for a failed send (base × 2^n, capped at 60s) */
+    const sendBackoff = (attempts: number): number => Math.min(sendBackoffBase * 2 ** Math.max(0, attempts - 1), 60_000)
+    /** slower backoff for "re-drive later" (claim owned elsewhere / target cooled down) */
+    const laterBackoff = (defers: number): number => Math.min(5000 * 2 ** Math.min(defers, 6), 5 * 60 * 1000)
 
     const drain = async () => {
       if (draining) return
@@ -97,11 +111,59 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
         while (budget > 0 && queue.length) {
           budget--
           const item = queue.shift()!
+          if (item.nextAt > Date.now()) {
+            queue.push(item) // backoff not elapsed yet: rotate, try again next pass
+            continue
+          }
           let deferred = false
           try {
             deferred = await dispatch(item.event)
           } catch (error) {
             ctx.root.reportTaint(ctx.fiber, 'apply', error)
+            // failure redrive (P1-5): a failed send goes back to the queue with
+            // backoff instead of being silently dropped. Three exits:
+            //  - `retryLater` (claim owned elsewhere / target circuit open):
+            //    defer without consuming the send budget, bounded by MAX_QUEUE_DEFERS;
+            //  - `redrivable === false` (config/param errors): give up now;
+            //  - otherwise: bounded attempts (default 5, matches outbound cap).
+            const retryLater = (error as any)?.retryLater === true
+            const redrivable = (error as any)?.redrivable !== false
+            if (!redrivable) {
+              ctx.root.reportTaint(
+                ctx.fiber,
+                'apply',
+                new Error(`router: dropping article ${item.event.platform}:${item.event.a_id}, non-redrivable send failure: ${error instanceof Error ? error.message : String(error)}`),
+              )
+              persistQueue()
+              continue
+            }
+            if (retryLater) {
+              if (item.defers + 1 >= MAX_QUEUE_DEFERS) {
+                ctx.root.reportTaint(
+                  ctx.fiber,
+                  'apply',
+                  new Error(`router: dropping article ${item.event.platform}:${item.event.a_id}, target unavailable after ${item.defers + 1} attempts`),
+                )
+                persistQueue()
+                continue
+              }
+              queue.push({ event: item.event, defers: item.defers + 1, attempts: item.attempts, nextAt: Date.now() + laterBackoff(item.defers) })
+              persistQueue()
+              continue
+            }
+            const attempts = item.attempts + 1
+            if (attempts >= maxSendAttempts) {
+              ctx.root.reportTaint(
+                ctx.fiber,
+                'apply',
+                new Error(`router: dropping article ${item.event.platform}:${item.event.a_id} after ${attempts} send attempts: ${error instanceof Error ? error.message : String(error)}`),
+              )
+              persistQueue()
+              continue
+            }
+            queue.push({ event: item.event, defers: item.defers, attempts, nextAt: Date.now() + sendBackoff(attempts) })
+            persistQueue()
+            continue
           }
           if (!deferred) {
             persistQueue()
@@ -116,7 +178,7 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
             persistQueue()
             continue
           }
-          queue.push({ event: item.event, defers: item.defers + 1 })
+          queue.push({ event: item.event, defers: item.defers + 1, attempts: item.attempts, nextAt: 0 })
           persistQueue()
         }
       } finally {
@@ -125,7 +187,7 @@ export const routerComponent: Component<{ routes?: RouteDef[]; retry_interval_ms
     }
 
     const off = bus.on('article', (event) => {
-      queue.push({ event, defers: 0 })
+      queue.push({ event, defers: 0, attempts: 0, nextAt: 0 })
       persistQueue()
       void drain()
     })

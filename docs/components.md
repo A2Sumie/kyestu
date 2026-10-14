@@ -61,7 +61,9 @@ export const myProcessorComponent: Component<MyConfig> = {
 
 **路由自动发现**：target 不需要登记到 router。`app/router` 持有 routes 配置（main.ts:78 注入），收到 article 事件后按 `route.from === crawlerId` 匹配，取 `via` 末位为 formatter、`to[]` 为 target id，经 `ctx.get<NodeHandle>(nodeKey(targetId))?.api<TargetApi>()` 直调（router.ts:43-63）。所以新 target 只要写进 routes 就上线；target fiber 未 ACTIVE 时事件留在持久化队列里有界重试（默认 ~1 分钟，超限丢弃并记 taint，见 docs/bus.md）。
 
-幂等与去重不要自己另写：`OutboundStore.claim/mark/markForwarded`（pipeline/outbound.ts）+ `forward_by` 是既有兜底。
+幂等与去重不要自己另写：`OutboundStore.claim/mark/markForwarded`（pipeline/outbound.ts）+ `forward_by` 是既有兜底。claim 判定四态：`sent`（终态幂等）、`exhausted`（5 次预算耗尽、永不重投）、`in_progress`（他人持有 claim，抛 `OneBotRetryLaterError` 稍后重试）、`null`（本次持有、必须发送）；`partial`（部分 chunk 已可见）也是终态，禁止整条重投。
+
+`target/qq` 的 `with` 键面：`group_id`、`min_interval`、`onebot`（多 UIN 时指向 `infra/onebot` 条目 id）、`media`（媒体来源策略，见 docs/snowluma.md §2/§8）、`health`（熔断参数）+ `TARGET_RUNTIME_KNOWN_WITH_KEYS`；契约是 `QqTargetApi`（types/api.ts：`send` + SnowLuma 运维 ops `recall`/`verifyReceipts`/`health`）。
 
 ## 4. ctx.set vs expose vs bus：服务面怎么选
 

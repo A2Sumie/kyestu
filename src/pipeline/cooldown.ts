@@ -179,3 +179,113 @@ export class CooldownMap {
     this.store?.remove(key)
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OneBot / QQ send failure classes (NapCat + SnowLuma dialects).
+//
+// The retcode/status/wording reading itself lives in pipeline/onebot-semantics
+// (pure); this table is the *policy* half: which class cools the QQ target
+// down, for how long, and whether the identical payload / the article may be
+// tried again. Semantics source: REPORT_snowluma_capabilities_2026-10-14.md §3.3
+// (SnowLuma `status:"failed"` + retcode 100/1200/1400/1401/1404/1413, no
+// `retcode:200` shape) + legacy NapCat EventChecker (`retcode:200` /
+// `result:120` refusal) which the old rule mapped to non-retryable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type QqSendClass =
+  | 'muted'
+  | 'risk_control'
+  | 'rejected'
+  | 'rate_limit'
+  | 'missing_target'
+  | 'permission'
+  | 'bad_request'
+  | 'unauthorized'
+  | 'unknown_action'
+  | 'payload_too_large'
+  | 'timeout'
+  | 'transient'
+  | 'internal'
+  | 'other'
+
+const QQ_SEND_COOLDOWN_MS: Record<QqSendClass, number> = {
+  // 群禁言：冷却后重驱（unmute 即恢复），绝不在禁言窗口内重发
+  muted: 10 * 60 * 1000,
+  // 风控/冻结：长冷却（idol-bbq 的不可重试冷却是 10/30min，此处取 30min）
+  risk_control: 30 * 60 * 1000,
+  // NapCat EventChecker 拒发（retcode=200/result=120）：同上，重发只会刷 API
+  rejected: 30 * 60 * 1000,
+  rate_limit: 5 * 60 * 1000,
+  // 目标不存在/已退群：配置已失效，长冷却并告警
+  missing_target: 24 * 60 * 60 * 1000,
+  permission: 60 * 60 * 1000,
+  // 修配置类：不冷却（冷却解决不了），也不重试
+  bad_request: 0,
+  unauthorized: 0,
+  unknown_action: 0,
+  payload_too_large: 0,
+  timeout: 0,
+  transient: 0,
+  internal: 0,
+  other: 0,
+}
+
+/** map a classified failure (onebot-semantics verdict or error) to the policy class */
+export function classifyQqSendFailure(failure: {
+  kind?: string
+  failureClass?: string
+  wording?: string
+  retcode?: number | null
+}): QqSendClass {
+  const kind = failure.kind ?? 'unknown'
+  const failureClass = failure.failureClass ?? 'other'
+  switch (kind) {
+    case 'rejected':
+      return 'rejected'
+    case 'bad_request':
+      return 'bad_request'
+    case 'unauthorized':
+      return 'unauthorized'
+    case 'unknown_action':
+      return 'unknown_action'
+    case 'payload_too_large':
+      return 'payload_too_large'
+    case 'internal':
+      return 'internal'
+    case 'transport':
+      return /timeout|timed out/i.test(failure.wording ?? '') ? 'timeout' : 'transient'
+    case 'business':
+      switch (failureClass) {
+        case 'muted':
+          return 'muted'
+        case 'risk_control':
+          return 'risk_control'
+        case 'rate_limit':
+          return 'rate_limit'
+        case 'missing_target':
+          return 'missing_target'
+        case 'permission':
+          return 'permission'
+        case 'temporary':
+          return 'transient'
+        default:
+          return 'other'
+      }
+    default:
+      return 'other'
+  }
+}
+
+export function qqSendCooldownMs(klass: QqSendClass): number {
+  return QQ_SEND_COOLDOWN_MS[klass]
+}
+
+/** chunk-level: may the identical payload be retried right now? */
+export function qqSendRetryNow(klass: QqSendClass): boolean {
+  return klass === 'timeout' || klass === 'transient' || klass === 'internal' || klass === 'other'
+}
+
+/** router-level: may the article be re-driven later (bounded by attempt caps)? */
+export function qqSendRedrive(klass: QqSendClass): boolean {
+  return !['bad_request', 'unauthorized', 'unknown_action', 'payload_too_large', 'missing_target', 'permission'].includes(klass)
+}

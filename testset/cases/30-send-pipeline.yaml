@@ -36,7 +36,7 @@ cases:
     when: sendPrepared
     then: transient 重试到上限；后两者立即上抛
   - id: SP-06
-    title: NapCat retcode 200（result 120 等）映射 NonRetryable
+    title: NapCat retcode 200（result 120 等）映射 NonRetryable（双桥语义见 96-snowluma.yaml SL-02）
     layer: send
     anchor: middleware/forwarder/qq.ts:121
     given: OneBot 返回 status=failed retcode=200

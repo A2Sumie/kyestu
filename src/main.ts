@@ -43,6 +43,11 @@ async function main() {
     const infra = INFRA_DEFAULTS.filter((e) => !present.has(e.id))
     const resolved = entries.map((entry) => ({ ...entry, with: resolveEnvStrings(entry.with ?? {}) as Record<string, any> }))
     const userApi = resolved.find((e) => e.id === 'api')
+    const qqTargetId = typeof userApi?.with?.qq_target === 'string' ? userApi.with.qq_target : resolved.find((e) => e.use === 'target/qq')?.id
+    const qqOps = () => {
+      const handle = qqTargetId ? root.ctx.get<NodeHandle>(nodeKey(qqTargetId)) : undefined
+      return handle?.api<{ recall?: unknown; verifyReceipts?: unknown; health?: unknown }>()
+    }
     const apiEntry: EntryDef = {
       id: 'api',
       use: 'app/api',
@@ -57,6 +62,22 @@ async function main() {
           const handle = root.ctx.get<NodeHandle>(nodeKey('cookie-keepalive'))
           const service = handle?.api<{ overview?: () => unknown }>()
           return service?.overview?.() ?? null
+        },
+        // QQ message-store ops (SnowLuma): recall / receipt check / health —
+        // resolved lazily per request, same pattern as onCookieHealth
+        onQqRecall: async (messageIds: Array<number | string>) => {
+          const service = qqOps() as { recall?: (ids: Array<number | string>) => Promise<unknown> } | undefined
+          if (!service?.recall) throw new Error('qq target not available')
+          return service.recall(messageIds)
+        },
+        onQqReceipts: async (outboundId: number) => {
+          const service = qqOps() as { verifyReceipts?: (id: number) => Promise<unknown> } | undefined
+          if (!service?.verifyReceipts) throw new Error('qq target not available')
+          return service.verifyReceipts(outboundId)
+        },
+        onQqHealth: () => {
+          const service = qqOps() as { health?: () => unknown } | undefined
+          return service?.health?.() ?? null
         },
         onReload: async (options?: { force?: boolean }) => {
           await boot(options?.force)

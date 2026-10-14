@@ -126,3 +126,26 @@ runtime 忠实实现了论文语义，但论文把若干正确性前提显式标
 4. **禁止模块级裸状态/裸 setTimeout**：fiber 重载后模块态仍在、不可回收、不参与隔离。现存反例：`pipeline/bilibili-reconcile.ts` 的进程级 `pending` Map + `setTimeout(0)` 一次性调度（:205-224），登记为**已知技术债**（进程级单次的语义很难纤维化成 fiber 效果，暂豁免），新代码不得新增同类。
 5. **网络/子进程 acquisition 必须挂逆，或在注释说明豁免理由**：fetch/子进程在 fiber UNLOADING 时不会被自动取消（AbortSignal 只绑超时不绑代际）——要么挂逆，要么在注释里写明为何豁免（参照论文 §6.1：emission 可不追踪，acquisition 必须可追踪）。
 6. **realm 撞名风险**：`isolate` 的 realm 是裸字符串，跨 entry 撞名即共享键空间，无 delimiter/own 机制（论文 Alg7 的 managed realms 未实现）。给 realm 起名时按 entry id 加前缀，避免无意共享。
+
+## D19：SnowLuma 适配与 QQ 发送语义重钉（2026-10-14）
+
+背景：3020e 的 QQ→OneBot 桥由老 NapCat 换 SnowLuma（能力目录 `REPORT_snowluma_capabilities_2026-10-14.md`）。
+本轮把 kyestu 的 OneBot 触点改造成**双方言自适应**（SnowLuma 高度利用、NapCat 行为兼容），语义细节与
+判读/媒体/历史表见 **docs/snowluma.md**。要点：
+
+1. **判读与策略分离**：retcode/status/wording 判读 = 纯函数（`pipeline/onebot-semantics.ts`），
+   冷却/重试/重投策略 = `pipeline/cooldown.ts` 的 `QqSendClass` 表。两轴（同载荷重试 vs 稍后重投）分开，
+   修配置类（1400/1401/1404/1413/目标失效）永不重投。NapCat `retcode=200/result=120` 拒发语义原样保留
+   （不可重试、可重投、30min 冷却）——既有 testset 钉点不推翻，只补 SnowLuma 侧。
+2. **D16 第 4 层硬耦合解除（file:// → URL/base64/upload_file_stream）**：媒体来源按决策表自适应，
+   未知桥/NapCat 仍走 `file://` 逐字节兼容（兼容优先，强制模式可覆盖）。D16"将来拆进程"清单相应降级一项。
+3. **message_id 落库 + message-store**：outbound 记 `provider_message_ids`（免迁移）、
+   `get_msg` 回执核对、`delete_msg` 撤回、`app/qq-history-sync` 锚点翻页历史补缺（`qq_messages` 镜像表）。
+   **historySync 不回填 bus**：无入站 QQ 消费链路，伪造文章会发明数据源语义（详见 docs/snowluma.md §3）。
+4. **QQ 侧健康/熔断 + 失败重投闭环**：`pipeline/qq-health`（FI-01：停机窗口不攒 failed 行、恢复自动继续；
+   探针 `get_status`）；router 失败重投（退避 + `max_send_attempts` 有界），**推翻** 旧"target 抛错=丢弃不重试"
+   的不对称行为（原为未裁决观察项，TEST-REVIEW §3 建议成文处一并改为裁决）；outbound claim 细化
+   （`failed` 即时回收受 5 次上限、`partial` 终态防重复可见内容、`sending` 30min stale 窗）。
+5. **不引 `@snowluma/sdk`/`@snowluma/mcp`**（内部能力层 + `get_version_info` 方言探测）；quick operation、
+   新 notice 事件、notifications webhook 需要入站事件通道，kyestu 只发不收，明确不做（P2 另议）。
+6. 运维显式 API：`/api/qq/recall`、`/api/qq/receipts`、`/api/qq/health` + 签名媒体路由 `/media/<name>?exp&sig`。

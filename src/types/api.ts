@@ -49,6 +49,23 @@ export interface TargetApi {
   send: (input: SendInput) => Promise<void>
 }
 
+/**
+ * QQ target ops (SnowLuma message-store surface): recall sent messages
+ * (`delete_msg`), verify send receipts (`get_msg`), and the health/circuit
+ * snapshot. Optional on the exposed object — consumers use QqTargetApi.
+ */
+export interface QqTargetOps {
+  /** recall by provider message_id; returns per-id outcomes */
+  recall: (messageIds: Array<number | string>) => Promise<{ recalled: Array<number | string>; failed: Array<{ message_id: number | string; error: string }> }>
+  /** `get_msg` receipt check for one outbound row; records the verdict on the row */
+  verifyReceipts: (outboundId: number) => Promise<Array<{ message_id: number | string; found: boolean; error?: string }>>
+  /** QQ bridge health/circuit snapshot */
+  health: () => unknown
+}
+
+/** target/qq service contract */
+export interface QqTargetApi extends TargetApi, QqTargetOps {}
+
 /** optional per-call context for processor/* (crawler post_processors) */
 export interface ProcessContext {
   sourceRef?: string

@@ -14,6 +14,7 @@ import { routerComponent } from './router'
 import { apiComponent } from './api'
 import { livePlayerComponent } from './live-player'
 import { cookieKeepaliveComponent } from './cookie-keepalive'
+import { qqHistorySyncComponent } from './qq-history-sync'
 
 export function defineInfra(registry: Registry): Registry {
   return registry
@@ -40,4 +41,5 @@ export function defineAll(registry: Registry): Registry {
     .define('app/api', apiComponent)
     .define('app/live-player', livePlayerComponent)
     .define('app/cookie-keepalive', cookieKeepaliveComponent)
+    .define('app/qq-history-sync', qqHistorySyncComponent)
 }

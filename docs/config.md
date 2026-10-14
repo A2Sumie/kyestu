@@ -62,6 +62,14 @@ routes:
 
 未变条目零扰动（fiber uid 不变）。下游因 provider 替换而在原 fiber 内重启（uid 不变，generation 递增）。
 
+## OneBot / QQ（SnowLuma 适配）
+
+`infra/onebot`（`http_url`/`access_token`/`timeout_ms`/`dialect: auto|napcat|snowluma|generic`/`upload_chunk_bytes`）、
+`target/qq`（`group_id`/`min_interval`/`onebot`/`media{mode,base_url,root,secret,signed_ttl_s,inline_max_bytes,allow_file_fallback}`/`health{probe_interval_ms,base_cooldown_ms,max_cooldown_ms}`）、
+`app/qq-history-sync`（`group_id|friend_id`/`onebot`/`interval_ms`/`count`/`gap_ms`/`max_pages`）、
+`app/router` 新增 `max_send_attempts`/`send_backoff_ms`、`app/api` 新增 `qq_target`/`media{root,secret}`。
+语义（retcode 判读表、媒体决策表、historySync、熔断）见 **docs/snowluma.md**；配置示例见其 §8。
+
 ## 从 idol-bbq 导入
 
 ```bash
