@@ -26,6 +26,102 @@ function inferWireApi(cfgProcessor: any): string {
   return 'chat_completions'
 }
 
+/**
+ * idol-bbq provider 的默认端点（middleware/processor/openai.ts 的 *_DEFAULT_CONFIG）。
+ * 厂商名/模型默认值只在导入器出现（D4/D5）：kyestu 侧看到的是 OpenAI 兼容端点配置。
+ */
+const PROVIDER_ENDPOINT_DEFAULTS: Record<string, Record<string, any>> = {
+  DeepSeekV4Flash: {
+    model_id: 'deepseek-v4-flash',
+    base_url: 'https://opencode.ai/zen/go/v1/chat/completions',
+    max_tokens: 384000,
+    temperature: 1.3,
+    extended_payload: { thinking: { type: 'disabled' } },
+  },
+  DeepSeekV4Pro: {
+    model_id: 'deepseek-v4-pro',
+    base_url: 'https://opencode.ai/zen/go/v1/chat/completions',
+    max_tokens: 384000,
+    temperature: 1.0,
+    extended_payload: { thinking: { type: 'disabled' } },
+  },
+  Hy3Free: {
+    model_id: 'hy3',
+    base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions',
+    temperature: 1.0,
+  },
+  OpenaiLike: {},
+}
+
+/** idol-bbq 的 `{{key}}` 模板语法 → kyestu 的 `{key}` */
+function templatePlaceholders(value: unknown): string | undefined {
+  const text = typeof value === 'string' ? value.trim() : ''
+  return text ? text.replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, '{$1}') : undefined
+}
+
+/**
+ * video_upload 的 idol-bbq 形态 → kyestu 形态：
+ * - `metadata_templates.{title,description}` → `title_template`/`desc_template`（显式模板优先）
+ * - `title_generation`（provider+cfg_processor）→ OpenAI 兼容端点块（译题语义见 docs/bili-title.md）
+ * - `tag_generation` 不移植（kyestu 无 LLM 标签链路），静态 tags 保留
+ */
+function mapVideoUploadConfig(id: string, cfgPlatform: any, warnings: string[]): any {
+  const videoUpload = cfgPlatform?.video_upload
+  if (!videoUpload || typeof videoUpload !== 'object') return cfgPlatform
+  const mapped: Record<string, any> = { ...videoUpload }
+
+  const templates = videoUpload.metadata_templates
+  if (templates && typeof templates === 'object') {
+    const title = templatePlaceholders(templates.title)
+    const description = templatePlaceholders(templates.description)
+    if (title && mapped.title_template) {
+      warnings.push(`target '${id}': video_upload.title_template overrides metadata_templates.title`)
+    } else if (title) {
+      mapped.title_template = title
+    }
+    if (description && mapped.desc_template) {
+      warnings.push(`target '${id}': video_upload.desc_template overrides metadata_templates.description`)
+    } else if (description) {
+      mapped.desc_template = description
+    }
+    delete mapped.metadata_templates
+  }
+
+  const titleGeneration = videoUpload.title_generation
+  if (titleGeneration && typeof titleGeneration === 'object') {
+    const provider = String(titleGeneration.provider || '')
+    if (provider && !(provider in PROVIDER_ENDPOINT_DEFAULTS)) {
+      warnings.push(`target '${id}': title_generation provider '${provider}' unknown; cfg_processor endpoint used as-is`)
+    }
+    const cfgProcessor = titleGeneration.cfg_processor ?? {}
+    const defaults = PROVIDER_ENDPOINT_DEFAULTS[provider] ?? {}
+    const merged = {
+      ...defaults,
+      ...cfgProcessor,
+      extended_payload: { ...(defaults.extended_payload ?? {}), ...(cfgProcessor.extended_payload ?? {}) },
+    }
+    const prompt = typeof merged.prompt === 'string' ? merged.prompt : ''
+    const { prompt: _prompt, ...endpoint } = merged
+    mapped.title_generation = {
+      enabled: titleGeneration.enabled !== false,
+      api_key: titleGeneration.api_key,
+      ...endpoint,
+      wire_api: inferWireApi(merged),
+      ...(titleGeneration.target_min_chars !== undefined ? { target_min_chars: titleGeneration.target_min_chars } : {}),
+      ...(titleGeneration.target_max_chars !== undefined ? { target_max_chars: titleGeneration.target_max_chars } : {}),
+      ...(prompt ? { prompt } : {}),
+    }
+  } else if (titleGeneration === false) {
+    mapped.title_generation = false
+  }
+
+  if (videoUpload.tag_generation) {
+    warnings.push(`target '${id}': video_upload.tag_generation is not ported (kyestu has no LLM tag chain); static tags kept`)
+    delete mapped.tag_generation
+  }
+  return { ...cfgPlatform, video_upload: mapped }
+}
+
 function crawlerKind(crawler: any): string {
   const origin: string = crawler.origin ?? ''
   const website: string = crawler.websites?.[0] ?? ''
@@ -175,7 +271,7 @@ export function convertIdolBbqConfig(old: any): KyestuConfig {
     components.push({
       id,
       use: `target/${target.platform}`,
-      with: target.cfg_platform ?? {},
+      with: mapVideoUploadConfig(id, target.cfg_platform ?? {}, warnings),
     })
   }
 

@@ -7,6 +7,9 @@ import { TargetRuntime, TARGET_RUNTIME_KNOWN_WITH_KEYS } from '../pipeline/targe
 import { VideoPairings, teaserJoinPlatform } from '../pipeline/pairing'
 import { ShortVideoDedup } from '../pipeline/short-video-dedup'
 import { uploadVideo } from '../pipeline/biliup'
+import type { BiliTitleGenerationOptions, BiliTitleGenerator } from '../pipeline/bili-title'
+import { ServiceStateStore, llmCircuitStore } from '../pipeline/service-state'
+import { OpenAiProcessorClient, type CircuitStore, type OpenAiProcessorConfig } from './llm-openai'
 import { convertXHashtagsToBiliFormat } from '../pipeline/bili-hashtag'
 import type { RenderedPayload, SendInput, TargetApi } from '../types/api'
 
@@ -44,6 +47,83 @@ function readCredentials(config: Record<string, any>): BiliCredentials {
   const sessdata = config.sessdata ?? cookies.SESSDATA ?? ''
   const biliJct = config.bili_jct ?? cookies.bili_jct ?? ''
   return { bili_jct: biliJct, sessdata, cookies: { SESSDATA: sessdata, bili_jct: biliJct, ...cookies } }
+}
+
+/**
+ * `video_upload.title_generation`：OpenAI 兼容端点（chat_completions/responses）+ 凭据。
+ * 显式 `enabled: false` 或缺 api_key = 关闭，只有确定性模板（与 idol-bbq 的差异：kyestu 没有
+ * LLM 标签链路，不存在"缺省复用 tag_generation 凭据"，缺配置即确定性）。
+ */
+export interface BiliTitleGenerationConfig {
+  enabled?: boolean
+  base_url?: string
+  api_key?: string
+  model_id?: string
+  wire_api?: 'responses' | 'chat_completions'
+  name?: string
+  prompt?: string
+  target_min_chars?: number
+  target_max_chars?: number
+  temperature?: number
+  top_p?: number
+  max_tokens?: number
+  response_format?: unknown
+  extended_payload?: Record<string, unknown>
+  reasoning_effort?: string
+  request_timeout_ms?: number
+  circuit?: { failure_threshold?: number; cooldown_seconds?: number }
+  fallback?: OpenAiProcessorConfig['fallback']
+}
+
+/**
+ * 译题/概括的 LLM 接缝：每次调用按任务 prompt 建一个 OpenAiProcessorClient（复用其
+ * 熔断/重试/降级语义；circuit 状态走 service_state，跨调用/重建存活）。
+ */
+export function createTitleGenerationLlm(
+  config: BiliTitleGenerationConfig,
+  options: { store?: CircuitStore } = {},
+): BiliTitleGenerator {
+  return async (prompt, input) => {
+    const client = new OpenAiProcessorClient(
+      {
+        api_key: config.api_key,
+        base_url: config.base_url,
+        model_id: config.model_id,
+        wire_api: config.wire_api,
+        name: config.name,
+        temperature: config.temperature,
+        top_p: config.top_p,
+        max_tokens: config.max_tokens,
+        response_format: config.response_format,
+        extended_payload: config.extended_payload,
+        reasoning_effort: config.reasoning_effort,
+        request_timeout_ms: config.request_timeout_ms,
+        circuit: config.circuit,
+        fallback: config.fallback,
+        prompt,
+      },
+      { store: options.store },
+    )
+    return client.process(input)
+  }
+}
+
+function resolveTitleGeneration(
+  raw: BiliTitleGenerationConfig | boolean | undefined,
+  db: KyestuDb,
+  entryId: string,
+): BiliTitleGenerationOptions | undefined {
+  if (!raw) return undefined
+  const config: BiliTitleGenerationConfig = raw === true ? {} : raw
+  if (config.enabled === false || !String(config.api_key ?? '').trim()) return undefined
+  return {
+    generate: createTitleGenerationLlm(config, {
+      store: llmCircuitStore(new ServiceStateStore(db), `${entryId}:title`),
+    }),
+    minChars: config.target_min_chars,
+    maxChars: config.target_max_chars,
+    prompt: config.prompt,
+  }
 }
 
 export class BilibiliClient {
@@ -145,6 +225,12 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
     const pairingCfg = { enabled: config.video_pairing?.enabled === true, ...config.video_pairing }
     const minInterval = Number(config.min_interval ?? 10_000)
     let lastSentAt = 0
+    // B 站标题 LLM 译题/概括（video_upload.title_generation）；缺配置/缺凭据=确定性模板
+    const titleGeneration = resolveTitleGeneration(
+      config.video_upload?.title_generation,
+      db,
+      String(config.__id ?? 'bilibili'),
+    )
 
     // DB-recovery reconciliation: when a recovery marker exists at boot, seed
     // sent state from the account's actual B站 archives so restored articles
@@ -285,6 +371,7 @@ export const bilibiliTargetComponent: Component<Record<string, any>> = {
           timezone: config.video_upload?.timezone ?? config.timezone,
           python_path: config.video_upload?.python_path,
           helper_path: config.video_upload?.helper_path,
+          title_generation: titleGeneration,
         },
         { videoPaths: parts, coverPath: cover, article },
       )

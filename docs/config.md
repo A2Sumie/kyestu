@@ -74,6 +74,16 @@ routes:
 `app/router` 新增 `max_send_attempts`/`send_backoff_ms`、`app/api` 新增 `qq_target`/`media{root,secret}`。
 语义（retcode 判读表、媒体决策表、historySync、熔断、入站事件与反应）见 **docs/snowluma.md**；配置示例见其 §8/§9。
 
+## B 站投稿（target/bilibili）
+
+`target/bilibili`（`cookie_file`/`sessdata`/`bili_jct`/`endpoints`/`min_interval`/`timezone`/`video_pairing`/
+`reconcile_on_recovery`/`suppress_media_uids`/`suppress_members_only_media`）+ `video_upload`（`enabled`/
+`cookie_file`/`tid`/`tags`/`title_template`/`desc_template`/`timezone`/`python_path`/`helper_path`/`dedup`/
+`title_generation`）。**标题策略（译题/概括、模板、glossary、后处理、兜底链、`title_generation` 配置面）见
+docs/bili-title.md**；要点：主标题=原标题的忠实中文翻译，模板 `【{account_title}】{upload_summary}`（无
+`[来源]` 段），`title_generation` 缺省=关（显式配置 OpenAI 兼容端点即启用，熔断走
+`llm-circuit:<entry>:title`）。
+
 ## 从 idol-bbq 导入
 
 ```bash
@@ -85,4 +95,5 @@ bun scripts/import-idol-bbq.ts <idol-bbq/assets/config.yaml> kyestu.config.yaml
 - formatters → `formatter/<render_type>`；targets → `target/<platform>`
 - connections 五图 → routes（crawler→formatter→target 主流；crawler-processor 翻成 `processor → crawler` 的服务边）
 - 顶层 `cfg_*` → `defaults:`；`api`/`live_capture` → `app/*` 组件
+- bili target 的 `video_upload`：`metadata_templates.{title,description}` → `title_template`/`desc_template`（`{{key}}`→`{key}`）；`title_generation.provider`（厂商名）→ OpenAI 兼容端点默认值（docs/bili-title.md）；`tag_generation` 不移植（告警跳过）
 - forwarder 的 origin 自动绑定是遗留行为，不导入（输出 warning，需要时手工补 route）

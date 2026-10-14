@@ -1,0 +1,327 @@
+[
+  {
+    "source": "22/7",
+    "target": "22/7",
+    "note": "group name"
+  },
+  {
+    "source": "ナナニジ",
+    "target": "22/7",
+    "note": "group nickname"
+  },
+  {
+    "source": "ナナブンノニジュウニ",
+    "target": "22/7",
+    "note": "group reading"
+  },
+  {
+    "source": "二十二分の七",
+    "target": "22/7",
+    "note": "group name"
+  },
+  {
+    "source": "7分の22",
+    "target": "22/7",
+    "note": "common ASR confusion"
+  },
+  {
+    "source": "七日",
+    "target": "22/7",
+    "note": "common ASR confusion when context is Nananiji"
+  },
+  {
+    "source": "七虹",
+    "target": "22/7",
+    "note": "Chinese operator nickname for 22/7"
+  },
+  {
+    "source": "相川奈央",
+    "target": "相川奈央",
+    "note": "member name; avoid 愛花"
+  },
+  {
+    "source": "麻丘真央",
+    "target": "麻丘真央",
+    "note": "member name; alias: まおすけ"
+  },
+  {
+    "source": "天城サリー",
+    "target": "天城莎莉",
+    "note": "member name; aliases: サリー, サリーたん"
+  },
+  {
+    "source": "河瀬詩",
+    "target": "河濑诗",
+    "note": "member name; avoid 川瀬/歌"
+  },
+  {
+    "source": "椎名桜月",
+    "target": "椎名樱月",
+    "note": "member name; alias: しぃちゃん"
+  },
+  {
+    "source": "月城咲舞",
+    "target": "月城咲舞",
+    "note": "member name; alias: えまっちゃ"
+  },
+  {
+    "source": "望月りの",
+    "target": "望月璃乃",
+    "note": "member name; alias: りのち"
+  },
+  {
+    "source": "折本美玲",
+    "target": "折本美玲",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "北原実咲",
+    "target": "北原实咲",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "黒崎ありす",
+    "target": "黑崎有栖",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "橘茉奈",
+    "target": "橘茉奈",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "桧山依子",
+    "target": "桧山依子",
+    "note": "3rd generation member; nickname いこちゃん"
+  },
+  {
+    "source": "三雲遥加",
+    "target": "三云遥加",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "南伊織",
+    "target": "南伊织",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "吉沢珠璃",
+    "target": "吉泽珠璃",
+    "note": "3rd generation member"
+  },
+  {
+    "source": "西條和",
+    "target": "西条和",
+    "note": "member name; aliases: なごみん, なごみさん"
+  },
+  {
+    "source": "涼花萌",
+    "target": "凉花萌",
+    "note": "member name; avoid 鈴花/萌え"
+  },
+  {
+    "source": "宮瀬玲奈",
+    "target": "宫濑玲奈",
+    "note": "member name; same person as 佐倉初"
+  },
+  {
+    "source": "佐倉初",
+    "target": "佐仓初",
+    "note": "member name; same person as 宮瀬玲奈"
+  },
+  {
+    "source": "白沢かなえ",
+    "target": "白泽加奈惠",
+    "note": "member name; aliases: かなえる, カナエル"
+  },
+  {
+    "source": "四条月",
+    "target": "四条月",
+    "note": "member name; alias: るうちゃん"
+  },
+  {
+    "source": "花宮初奈",
+    "target": "花宫初奈",
+    "note": "member name; avoid 妮娜/新名"
+  },
+  {
+    "source": "西浦そら",
+    "target": "西浦空",
+    "note": "character name"
+  },
+  {
+    "source": "桐生塔子",
+    "target": "桐生塔子",
+    "note": "character name"
+  },
+  {
+    "source": "藤間桜",
+    "target": "藤间樱",
+    "note": "character name"
+  },
+  {
+    "source": "斎藤ニコル",
+    "target": "斋藤妮可露",
+    "note": "character/member name"
+  },
+  {
+    "source": "織原純佳",
+    "target": "织原纯佳",
+    "note": "character name"
+  },
+  {
+    "source": "氷室みず姫",
+    "target": "冰室水姬",
+    "note": "character name"
+  },
+  {
+    "source": "瀬良穂乃花",
+    "target": "濑良穗乃花",
+    "note": "character name"
+  },
+  {
+    "source": "滝川みう",
+    "target": "泷川美羽",
+    "note": "character name"
+  },
+  {
+    "source": "神木みかみ",
+    "target": "神木御神",
+    "note": "character name"
+  },
+  {
+    "source": "八神叶愛",
+    "target": "八神叶爱",
+    "note": "character name"
+  },
+  {
+    "source": "永峰楓",
+    "target": "永峰枫",
+    "note": "character name"
+  },
+  {
+    "source": "一之瀬蛍",
+    "target": "一之濑萤",
+    "note": "character name"
+  },
+  {
+    "source": "計算中",
+    "target": "计算中",
+    "note": "program title suffix"
+  },
+  {
+    "source": "検算中",
+    "target": "验算中",
+    "note": "program title suffix"
+  },
+  {
+    "source": "計算外",
+    "target": "计算外",
+    "note": "program title suffix"
+  },
+  {
+    "source": "22/7計算外",
+    "target": "22/7计算外",
+    "note": "variety program title"
+  },
+  {
+    "source": "ナナコミ",
+    "target": "NANA-COMI",
+    "note": "official BBS name"
+  },
+  {
+    "source": "ナナニジハウス",
+    "target": "七虹家",
+    "note": "22/7 fanclub name"
+  },
+  {
+    "source": "Audee",
+    "target": "Audee",
+    "note": "broadcast provider"
+  },
+  {
+    "source": "オーディー",
+    "target": "Audee",
+    "note": "broadcast provider"
+  },
+  {
+    "source": "うたっけ",
+    "target": "诗家",
+    "note": "Kawase Uta membership program"
+  },
+  {
+    "source": "二つの道",
+    "target": "二つの道",
+    "note": "16th single title; keep Japanese title unless official Chinese title is decided"
+  },
+  {
+    "source": "蝉は夏を知らない",
+    "target": "蝉は夏を知らない",
+    "note": "song title; keep Japanese title unless official Chinese title is decided"
+  },
+  {
+    "source": "命の続き",
+    "target": "命の続き",
+    "note": "song title; keep Japanese title unless official Chinese title is decided"
+  },
+  {
+    "source": "未来があるから",
+    "target": "未来があるから",
+    "note": "song title; keep Japanese title unless official Chinese title is decided"
+  },
+  {
+    "source": "Fivesta",
+    "target": "Fivesta",
+    "note": "22/7 live title"
+  },
+  {
+    "source": "ナナニジライブ2026",
+    "target": "ナナニジライブ2026",
+    "note": "3rd generation regular live title"
+  },
+  {
+    "source": "22/7 LIVE「15」",
+    "target": "22/7 LIVE「15」",
+    "note": "2026 live title"
+  },
+  {
+    "source": "22/7 Live in Taipei 2026",
+    "target": "22/7 Live in Taipei 2026",
+    "note": "2026 Taipei live title"
+  },
+  {
+    "source": "22/7 ANNIVERSARY LIVE 2026",
+    "target": "22/7 ANNIVERSARY LIVE 2026",
+    "note": "2026 anniversary live title"
+  },
+  {
+    "source": "冰室みず姫",
+    "target": "冰室水姬",
+    "note": "character name"
+  },
+  {
+    "source": "晴れた日のベンチ",
+    "target": "晴天长椅",
+    "note": "sub-unit name"
+  },
+  {
+    "source": "気の抜けたサイダー",
+    "target": "跑气汽水",
+    "note": "sub-unit name"
+  },
+  {
+    "source": "蛍光灯再生計画",
+    "target": "荧光灯再生计划",
+    "note": "sub-unit name"
+  },
+  {
+    "source": "サリラジ",
+    "target": "莎莉电台",
+    "note": "radio program name"
+  },
+  {
+    "source": "ふつおた",
+    "target": "一般来信",
+    "note": "radio term"
+  }
+]

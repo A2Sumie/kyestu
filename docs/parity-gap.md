@@ -31,6 +31,6 @@
 ## 待部署实测
 - 真实平台抓取/发送（cookie、风控、真实 OneBot/B站）
 - live relay 对 tv.n2nj.moe 播放器 API 面校准
-- biliup LLM 标题/标签生成（当前只有确定性模板）
+- ~~biliup LLM 标题生成~~ ✅ 已做（2026-10-14，D21）：`pipeline/bili-title.ts` 译题/概括 + 兜底链，与 idol-bbq d56c0d2 行为一致（docs/bili-title.md）；**LLM 标签生成仍未移植**（静态 `video_upload.tags`，导入器对 `tag_generation` 告警跳过）
 - live_capture 两服务 + plan API（未移植；导入器对 live_capture 配置跳过并 warning，不再产出未注册 entry）
 - API 面：生产 ~45 端点，kyestu 只有 /api/status + /api/reload，按需补

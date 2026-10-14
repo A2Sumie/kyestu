@@ -175,3 +175,31 @@ runtime 忠实实现了论文语义，但论文把若干正确性前提显式标
 6. **显式决定**：配额（每群每规则 cooldown/limit）为**内存态**，fiber 重建/重启即重置——防抖非性计费，
    不值得 service_state 写放大约束（与 F3 同类问题的显式决定）；quick operation 以 webhook 响应体交付
    （OneBot 快捷操作契约），每事件首个生效；自身消息/`message_sent` 回显默认不反应（防死循环）。
+
+## D21：B 站标题链路同步 idol-bbq 译题整改（2026-10-14）
+
+背景：idol-bbq 侧完成 B 站标题整改（`d56c0d2`、`WORK_REPORT_bili-titlegen_2026-10-14.md`）：用户不满
+生成式标题质量，口径改为**B 站主标题 = 原标题的忠实中文翻译**。本条把同语义落到 kyestu 的
+`pipeline/bili-title.ts` + `pipeline/biliup.ts` + `target/bilibili`（原为极简确定性模板，parity-gap
+"待部署实测"里的"biliup LLM 标题/标签生成"此前从未实现）。语义规范见 **docs/bili-title.md**。要点：
+
+1. **任务判定**：youtube（带创作者原标题）→ `translate_original_title`，`original_title`（content 首行）
+   是唯一翻译素材、产出逐字采用；X/IG/TT → `summarize_post_title` 忠实概括；website 作者手写标题
+   永不进 LLM。译题模式忠实不剥上下文，概括模式剥模型回显的账号名/日期。
+2. **模板统一去 `[来源]` 段**：默认 `【{account_title}】{upload_summary}`（品牌前缀+`MM.DD_YY` 日期码
+   保留；账号识别不到退化 `【22/7】`）。自定义模板仍可用 `{source_tag}`。原标题照旧进简介 `原标题:` 行
+   （首部固定、正文去重）。
+3. **确定性后处理对 LLM 输出与确定性标题同时生效**：平台词清洗、emoji 收敛、≤80 字（码点）语义安全
+   截断（`…`、不切半个词）；合格性校验=无汉字拒收/假名绝对多数拒收/标题党禁词拒收（旧"见假名即拒"会
+   误杀保留日文专名的合法译文——译名表政策让「命の続き」等保留日文）。兜底链：LLM 译题 → 译文首行 →
+   原标题原文 → 日期壳 → 硬壳。
+4. **译名一致**：65 条 22/7 日→中译名表以事实形态落 `assets/knowledge/22_7/translation_terms_22_7_ja_zh.json`
+   （自 idol-bbq 只取译名，不搬知识刷新流程），随译题 prompt 下发。
+5. **组件形态**：纯逻辑进 `pipeline/bili-title.ts`（D18 纪律：无模块级可变状态、无裸 setTimeout）；
+   LLM 接缝由 `target/bilibili` 按 `video_upload.title_generation` 注入，复用 `processor/openai` 的
+   `OpenAiProcessorClient`（重试/熔断/fallback），熔断态走 service_state `llm-circuit:<entry>:title`。
+   **缺省=关**（显式配置启用）——与 idol-bbq"未配置默认开、复用 tag_generation 凭据"的有意差异：
+   kyestu 无 LLM 标签链路、无凭据可复用，缺配置即确定性模板。
+6. **LLM 标签生成不移植**（遗留项）：kyestu 标签仍是静态 `video_upload.tags`；导入器对 idol-bbq 的
+   `tag_generation` 告警跳过。厂商 provider 名只在导入器映射（D5）：`title_generation.provider` →
+   OpenAI 兼容端点默认值；`metadata_templates.*` → `title_template`/`desc_template`（`{{key}}`→`{key}`）。

@@ -266,3 +266,72 @@ test('Mechanical processors map to processor/rules instead of being dropped', ()
   expect(rules.with).toMatchObject({ action: 'merge', extended_payload: { merge_window_minutes: 30 } })
   expect((config as any).warnings ?? []).toEqual([])
 })
+
+test('video_upload: metadata_templates/title_generation 映射为 kyestu 标题链路配置', () => {
+  const config = convertIdolBbqConfig({
+    forward_targets: [
+      {
+        platform: 'bilibili',
+        id: 'b站',
+        cfg_platform: {
+          video_upload: {
+            enabled: true,
+            tags: ['22/7'],
+            metadata_templates: { title: '【{{account_title}}】{{upload_summary}}', description: '{{content}}\n\n来源: {{url}}' },
+            tag_generation: { enabled: true, provider: 'Hy3Free', api_key: 'env:HY3_KEY' },
+            title_generation: {
+              enabled: true,
+              provider: 'DeepSeekV4Flash',
+              api_key: 'env:DEEPSEEK_API_KEY',
+              target_min_chars: 8,
+              target_max_chars: 32,
+              cfg_processor: { wire_api: 'responses', prompt: 'custom rules', temperature: 0.5 },
+            },
+          },
+        },
+      },
+      {
+        platform: 'bilibili',
+        id: 'b站2',
+        cfg_platform: {
+          video_upload: {
+            title_generation: false,
+            title_template: '【{account_title}】{upload_summary}',
+            metadata_templates: { title: '【{{account_title}}】[{{source_tag}}] {{upload_summary}}' },
+          },
+        },
+      },
+    ],
+    connections: {},
+  })
+  const byId = new Map(config.components.map((c) => [c.id, c]))
+  const upload = (byId.get('b站')!.with as any).video_upload
+  // {{key}} → {key}；标题模板去 [来源] 段随导入保留模板本身（模板是配置意图，不改写内容）
+  expect(upload.title_template).toBe('【{account_title}】{upload_summary}')
+  expect(upload.desc_template).toBe('{content}\n\n来源: {url}')
+  expect(upload.metadata_templates).toBeUndefined()
+  // tag_generation 不移植（kyestu 无 LLM 标签链路），静态 tags 保留
+  expect(upload.tag_generation).toBeUndefined()
+  expect(upload.tags).toEqual(['22/7'])
+  // 厂商 provider 名 → OpenAI 兼容端点默认值（D5：厂商名只在导入器出现）
+  expect(upload.title_generation).toMatchObject({
+    enabled: true,
+    api_key: 'env:DEEPSEEK_API_KEY',
+    model_id: 'deepseek-v4-flash',
+    base_url: 'https://opencode.ai/zen/go/v1/chat/completions',
+    max_tokens: 384000,
+    wire_api: 'responses',
+    target_min_chars: 8,
+    target_max_chars: 32,
+    prompt: 'custom rules',
+    temperature: 0.5,
+    extended_payload: { thinking: { type: 'disabled' } },
+  })
+  // 显式 title_template 优先于 metadata_templates.title（告警）
+  const upload2 = (byId.get('b站2')!.with as any).video_upload
+  expect(upload2.title_generation).toBe(false)
+  expect(upload2.title_template).toBe('【{account_title}】{upload_summary}')
+  const warnings = (config as any).warnings as string[]
+  expect(warnings.some((w) => w.includes('tag_generation is not ported'))).toBe(true)
+  expect(warnings.some((w) => w.includes('title_template overrides metadata_templates.title'))).toBe(true)
+})

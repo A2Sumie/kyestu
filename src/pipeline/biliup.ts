@@ -1,5 +1,11 @@
 import { spawn } from 'child_process'
 import { convertXHashtagsToBiliFormat } from './bili-hashtag'
+import {
+  type BiliTitleGenerationOptions,
+  DEFAULT_TITLE_TEMPLATE,
+  deriveDescription,
+  resolveBiliTitle,
+} from './bili-title'
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -21,12 +27,27 @@ export interface BiliupUploadConfig {
   title_template?: string
   desc_template?: string
   timezone?: string
+  /**
+   * LLM 译题/概括接缝（组件侧按 video_upload.title_generation 注入）。
+   * 缺省只有确定性模板（译文首行 → 原标题 → 日期壳），语义见 pipeline/bili-title.ts。
+   */
+  title_generation?: BiliTitleGenerationOptions
 }
 
 export interface UploadInput {
   videoPaths: string[]
   coverPath?: string
-  article: { a_id: string; u_id: string; username?: string; url: string; content?: string | null; translation?: string | null; platform?: string; created_at?: number }
+  article: {
+    a_id: string
+    u_id: string
+    username?: string
+    url: string
+    content?: string | null
+    translation?: string | null
+    platform?: string
+    type?: string
+    created_at?: number
+  }
 }
 
 export interface UploadResult {
@@ -34,75 +55,7 @@ export interface UploadResult {
   aid?: number
 }
 
-const SOURCE_TAGS: Record<string, string> = {
-  twitter: 'X',
-  tiktok: 'TT',
-  instagram: 'ins',
-  youtube: 'YT',
-  website: 'blog',
-}
-
-/** MM.DD_YY, e.g. 08.16_26 (production format) */
-function dateCode(timestampSeconds: number | undefined, timeZone: string): string {
-  if (!timestampSeconds) return ''
-  let parts: Record<string, string>
-  try {
-    parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    })
-      .formatToParts(new Date(timestampSeconds * 1000))
-      .reduce<Record<string, string>>((acc, part) => {
-        if (part.type !== 'literal') acc[part.type] = part.value
-        return acc
-      }, {})
-  } catch {
-    parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit' })
-      .formatToParts(new Date(timestampSeconds * 1000))
-      .reduce<Record<string, string>>((acc, part) => {
-        if (part.type !== 'literal') acc[part.type] = part.value
-        return acc
-      }, {})
-  }
-  return `${parts.month}.${parts.day}_${String(parts.year ?? '').slice(-2)}`
-}
-
-function truncateCodePoints(value: string, maxChars: number): string {
-  const chars = Array.from(value)
-  if (chars.length <= maxChars) return value
-  return `${chars.slice(0, Math.max(0, maxChars - 3)).join('')}...`
-}
-
-function renderTemplate(template: string, article: UploadInput['article'], timeZone: string): string {
-  const displayName = article.username ?? article.u_id
-  const accountTitle = displayName ? (displayName.startsWith('22/7') ? displayName : `22/7 ${displayName}`) : ''
-  // website articles carry author-written display titles: keep the original,
-  // never the translation. Social captions use the translated first line.
-  const captionSource = article.platform === 'website' ? article.content : (article.translation ?? article.content)
-  const caption = (captionSource ?? '').split('\n')[0] ?? ''
-  const headline = truncateCodePoints(caption.replace(/\s+/g, ' ').trim(), 40)
-  // upload_summary drops the display name on purpose: account_title already
-  // carries it, repeating it after [TT]/[X] reads as a stutter
-  const uploadSummary = [dateCode(article.created_at, timeZone), headline].filter(Boolean).join(' ')
-  return template
-    .replaceAll('{account_title}', accountTitle)
-    .replaceAll('{source_tag}', SOURCE_TAGS[article.platform ?? ''] ?? '社媒')
-    .replaceAll('{date_code}', dateCode(article.created_at, timeZone))
-    .replaceAll('{upload_summary}', uploadSummary)
-    .replaceAll('{u_id}', article.u_id)
-    .replaceAll('{username}', displayName)
-    .replaceAll('{platform}', article.platform ?? '')
-    .replaceAll('{headline}', headline)
-    .replaceAll('{a_id}', article.a_id)
-    .replaceAll('{content}', article.content ?? '')
-    .replaceAll('{url}', article.url)
-    .replace(/【】/g, '')
-    .replace(/\[\]/g, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-}
+const DEFAULT_DESC_TEMPLATE = '{content}\n\n来源: {url}'
 
 export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput): Promise<UploadResult> {
   const helperPath =
@@ -134,11 +87,19 @@ export async function uploadVideo(config: BiliupUploadConfig, input: UploadInput
     const timeZone = config.timezone ?? 'Asia/Tokyo'
     // X hashtags reach Bilibili in the paired #tag# form; convert at this output
     // boundary so both templated and default metadata are covered.
-    const title = truncateCodePoints(
-      convertXHashtagsToBiliFormat(renderTemplate(config.title_template ?? '【{account_title}】[{source_tag}] {upload_summary}', input.article, timeZone)),
-      80,
+    // 标题：译题/概括（可选 LLM）+ 确定性后处理 + 兜底链，见 pipeline/bili-title.ts。
+    const title = convertXHashtagsToBiliFormat(
+      await resolveBiliTitle({
+        article: input.article,
+        timeZone,
+        template: config.title_template,
+        generation: config.title_generation,
+      }),
     )
-    const desc = convertXHashtagsToBiliFormat(renderTemplate(config.desc_template ?? '{content}\n\n来源: {url}', input.article, timeZone))
+    // 简介：youtube 原标题以 `原标题:` 行固定在首部（原文照旧，不翻译）
+    const desc = convertXHashtagsToBiliFormat(
+      deriveDescription(input.article, timeZone, config.desc_template ?? DEFAULT_DESC_TEMPLATE),
+    )
 
     const args = [
       helperPath,
